@@ -11,15 +11,23 @@ use hyprland::{
 use iced::{
     Element, Length, Subscription, alignment,
     stream::channel,
-    widget::{Row, button, container, text},
+    widget::{MouseArea, Row, button, container, text},
     window::Id,
 };
 use itertools::Itertools;
 use log::{debug, error};
 use std::{
     any::TypeId,
+    collections::HashMap,
     sync::{Arc, RwLock},
 };
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub enum Displayed {
+    Active,
+    Visible,
+    Hidden,
+}
 
 #[derive(Debug, Clone)]
 pub struct Workspace {
@@ -27,6 +35,12 @@ pub struct Workspace {
     pub name: String,
     pub monitor_id: Option<i128>,
     pub monitor: String,
+    pub displayed: Displayed,
+    pub windows: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct VirtualDesktop {
     pub active: bool,
     pub windows: u16,
 }
@@ -50,6 +64,9 @@ fn get_workspaces(config: &WorkspacesModuleConfig) -> Vec<Workspace> {
 
     // map special workspaces
     for w in special.iter() {
+        // Special workspaces are active if they are assigned to any monitor.
+        // Currently a special and normal workspace can be active at the same time on the same monitor.
+        let active = monitors.iter().any(|m| m.special_workspace.id == w.id);
         result.push(Workspace {
             id: w.id,
             name: w
@@ -59,31 +76,89 @@ fn get_workspaces(config: &WorkspacesModuleConfig) -> Vec<Workspace> {
                 .map_or_else(|| "".to_string(), |s| s.to_owned()),
             monitor_id: w.monitor_id,
             monitor: w.monitor.clone(),
-            active: monitors.iter().any(|m| m.special_workspace.id == w.id),
+            displayed: if active {
+                Displayed::Active
+            } else {
+                Displayed::Hidden
+            },
             windows: w.windows,
         });
     }
 
-    // map normal workspaces
-    for w in normal.iter() {
-        let display_name = if w.id > 0 {
-            let idx = (w.id - 1) as usize;
-            config
+    if config.enable_virtual_desktops {
+        let monitor_count = monitors.len();
+        let mut virtual_desktops: HashMap<i32, VirtualDesktop> = HashMap::new();
+
+        // map normal workspaces
+        for w in normal.iter() {
+            // Calculate the virtual desktop ID based on the workspace ID and the number of workspaces per virtual desktop
+            let vdesk_id = ((w.id - 1) / monitor_count as i32) + 1;
+
+            if let Some(vdesk) = virtual_desktops.get_mut(&vdesk_id) {
+                vdesk.windows += w.windows;
+                vdesk.active = vdesk.active || Some(w.id) == active.as_ref().map(|a| a.id);
+            } else {
+                virtual_desktops.insert(
+                    vdesk_id,
+                    VirtualDesktop {
+                        active: Some(w.id) == active.as_ref().map(|a| a.id),
+                        windows: w.windows,
+                    },
+                );
+            }
+        }
+
+        // Add virtual desktops to the result as workspaces
+        virtual_desktops.into_iter().for_each(|(id, vdesk)| {
+            // Try to get a name from the config, default to ID
+            let idx = (id - 1) as usize;
+            let display_name = config
                 .workspace_names
                 .get(idx)
                 .cloned()
-                .unwrap_or_else(|| w.id.to_string())
-        } else {
-            w.name.clone()
-        };
-        result.push(Workspace {
-            id: w.id,
-            name: display_name,
-            monitor_id: w.monitor_id,
-            monitor: w.monitor.clone(),
-            active: Some(w.id) == active.as_ref().map(|a| a.id),
-            windows: w.windows,
+                .unwrap_or_else(|| id.to_string());
+            let active = if vdesk.active {
+                Displayed::Active
+            } else {
+                Displayed::Hidden
+            };
+            result.push(Workspace {
+                id,
+                name: display_name,
+                monitor_id: None,
+                monitor: "".to_string(),
+                displayed: active,
+                windows: vdesk.windows,
+            });
         });
+    } else {
+        // map normal workspaces
+        for w in normal.iter() {
+            let display_name = if w.id > 0 {
+                let idx = (w.id - 1) as usize;
+                config
+                    .workspace_names
+                    .get(idx)
+                    .cloned()
+                    .unwrap_or_else(|| w.id.to_string())
+            } else {
+                w.name.clone()
+            };
+            let active = active.as_ref().is_some_and(|a| a.id == w.id);
+            let visible = monitors.iter().any(|m| m.active_workspace.id == w.id);
+            result.push(Workspace {
+                id: w.id,
+                name: display_name,
+                monitor_id: w.monitor_id,
+                monitor: w.monitor.clone(),
+                displayed: match (active, visible) {
+                    (true, _) => Displayed::Active,
+                    (false, true) => Displayed::Visible,
+                    (false, false) => Displayed::Hidden,
+                },
+                windows: w.windows,
+            });
+        }
     }
 
     if !config.enable_workspace_filling || normal.is_empty() {
@@ -93,8 +168,12 @@ fn get_workspaces(config: &WorkspacesModuleConfig) -> Vec<Workspace> {
     };
 
     // To show workspaces that don't exist in Hyprland we need to create fake ones
-    let existing_ids = normal.iter().map(|w| w.id).collect_vec();
-    let mut max_id = *existing_ids.iter().max().unwrap_or(&0);
+    let existing_ids = result.iter().map(|w| w.id).collect_vec();
+    let mut max_id = *existing_ids
+        .iter()
+        .filter(|&&id| id > 0) // filter out special workspaces
+        .max()
+        .unwrap_or(&0);
     if let Some(max_workspaces) = config.max_workspaces
         && max_workspaces > max_id as u32
     {
@@ -123,7 +202,7 @@ fn get_workspaces(config: &WorkspacesModuleConfig) -> Vec<Workspace> {
             name: display_name,
             monitor_id: None,
             monitor: "".to_string(),
-            active: false,
+            displayed: Displayed::Hidden,
             windows: 0,
         });
     }
@@ -138,6 +217,7 @@ pub enum Message {
     WorkspacesChanged,
     ChangeWorkspace(i32),
     ToggleSpecialWorkspace(i32),
+    Scroll(i32),
 }
 
 pub struct Workspaces {
@@ -160,15 +240,25 @@ impl Workspaces {
             }
             Message::ChangeWorkspace(id) => {
                 if id > 0 {
-                    let already_active = self.workspaces.iter().any(|w| w.active && w.id == id);
+                    let already_active = self
+                        .workspaces
+                        .iter()
+                        .any(|w| w.displayed == Displayed::Active && w.id == id);
 
                     if !already_active {
                         debug!("changing workspace to: {id}");
-                        let res = hyprland::dispatch::Dispatch::call(
-                            hyprland::dispatch::DispatchType::Workspace(
-                                hyprland::dispatch::WorkspaceIdentifierWithSpecial::Id(id),
-                            ),
-                        );
+                        let res = if self.config.enable_virtual_desktops {
+                            let id_str = id.to_string();
+                            hyprland::dispatch::Dispatch::call(
+                                hyprland::dispatch::DispatchType::Custom("vdesk", &id_str),
+                            )
+                        } else {
+                            hyprland::dispatch::Dispatch::call(
+                                hyprland::dispatch::DispatchType::Workspace(
+                                    hyprland::dispatch::WorkspaceIdentifierWithSpecial::Id(id),
+                                ),
+                            )
+                        };
 
                         if let Err(e) = res {
                             error!("failed to dispatch workspace change: {e:?}");
@@ -176,6 +266,7 @@ impl Workspaces {
                     }
                 }
             }
+
             Message::ToggleSpecialWorkspace(id) => {
                 if let Some(special) = self.workspaces.iter().find(|w| w.id == id && w.id < 0) {
                     debug!("toggle special workspace: {id}");
@@ -197,6 +288,31 @@ impl Workspaces {
                     }
                 }
             }
+            Message::Scroll(direction) => {
+                let current_workspace = self
+                    .workspaces
+                    .iter()
+                    .find(|w| w.displayed.eq(&Displayed::Active));
+                let Some(current_id) = current_workspace.map(|w| w.id) else {
+                    return;
+                };
+
+                let next_workspace = if direction > 0 {
+                    self.workspaces
+                        .iter()
+                        .filter(|w| w.id > current_id)
+                        .min_by_key(|w| w.id)
+                } else {
+                    self.workspaces
+                        .iter()
+                        .filter(|w| w.id < current_id)
+                        .max_by_key(|w| w.id)
+                };
+                let Some(next_workspace) = next_workspace else {
+                    return;
+                };
+                Self::update(self, Message::ChangeWorkspace(next_workspace.id));
+            }
         }
     }
 
@@ -209,75 +325,101 @@ impl Workspaces {
         let monitor_name = outputs.get_monitor_name(id);
 
         Into::<Element<Message>>::into(
-            Row::with_children(
-                self.workspaces
-                    .iter()
-                    .filter_map(|w| {
-                        let show = match self.config.visibility_mode {
-                            WorkspaceVisibilityMode::All => true,
-                            WorkspaceVisibilityMode::MonitorSpecific => {
-                                w.monitor == monitor_name.unwrap_or_else(|| &w.monitor)
-                                    || !outputs.has_name(&w.monitor)
-                            }
-                            WorkspaceVisibilityMode::MonitorSpecificExclusive => {
-                                w.monitor == monitor_name.unwrap_or_else(|| &w.monitor)
-                            }
-                        };
-                        if show {
-                            let empty = w.windows == 0;
-                            let monitor = w.monitor_id;
-
-                            let color = monitor.map(|m| {
-                                if w.id > 0 {
-                                    theme.workspace_colors.get(m as usize).copied()
-                                } else {
-                                    theme
-                                        .special_workspace_colors
-                                        .as_ref()
-                                        .unwrap_or(&theme.workspace_colors)
-                                        .get(m as usize)
-                                        .copied()
+            MouseArea::new(
+                Row::with_children(
+                    self.workspaces
+                        .iter()
+                        .filter_map(|w| {
+                            let show = match self.config.visibility_mode {
+                                WorkspaceVisibilityMode::All => true,
+                                WorkspaceVisibilityMode::MonitorSpecific => {
+                                    w.monitor == monitor_name.unwrap_or_else(|| &w.monitor)
+                                        || !outputs.has_name(&w.monitor)
                                 }
-                            });
+                                WorkspaceVisibilityMode::MonitorSpecificExclusive => {
+                                    w.monitor == monitor_name.unwrap_or_else(|| &w.monitor)
+                                }
+                            };
+                            if show {
+                                let empty = w.windows == 0;
 
-                            Some(
-                                button(
-                                    container(text(w.name.as_str()).size(theme.font_size.xs))
-                                        .align_x(alignment::Horizontal::Center)
-                                        .align_y(alignment::Vertical::Center),
-                                )
-                                .style(theme.workspace_button_style(empty, color))
-                                .padding(if w.id < 0 {
-                                    if w.active {
-                                        [0, theme.space.md]
+                                let color_index = if self.config.enable_virtual_desktops {
+                                    // For virtual desktops, we use the workspace ID as the index
+                                    Some(w.id as i128)
+                                } else {
+                                    // For normal workspaces, we use the monitor ID as the index
+                                    w.monitor_id
+                                };
+                                let color = color_index.map(|i| {
+                                    if w.id > 0 {
+                                        theme.workspace_colors.get(i as usize).copied()
                                     } else {
-                                        [0, theme.space.xs]
+                                        theme
+                                            .special_workspace_colors
+                                            .as_ref()
+                                            .unwrap_or(&theme.workspace_colors)
+                                            .get(i as usize)
+                                            .copied()
                                     }
-                                } else {
-                                    [0, 0]
-                                })
-                                .on_press(if w.id > 0 {
-                                    Message::ChangeWorkspace(w.id)
-                                } else {
-                                    Message::ToggleSpecialWorkspace(w.id)
-                                })
-                                .width(if w.id < 0 {
-                                    Length::Shrink
-                                } else if w.active {
-                                    Length::Fixed(theme.space.xl as f32)
-                                } else {
-                                    Length::Fixed(theme.space.md as f32)
-                                })
-                                .height(theme.space.md)
-                                .into(),
-                            )
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<Element<'_, _, _>>>(),
+                                });
+
+                                Some(
+                                    button(
+                                        container(text(w.name.as_str()).size(theme.font_size.xs))
+                                            .align_x(alignment::Horizontal::Center)
+                                            .align_y(alignment::Vertical::Center),
+                                    )
+                                    .style(theme.workspace_button_style(empty, color))
+                                    .padding(if w.id < 0 {
+                                        match w.displayed {
+                                            Displayed::Active => [0, theme.space.md],
+                                            Displayed::Visible => [0, theme.space.sm],
+                                            Displayed::Hidden => [0, theme.space.xs],
+                                        }
+                                    } else {
+                                        [0, 0]
+                                    })
+                                    .on_press(if w.id > 0 {
+                                        Message::ChangeWorkspace(w.id)
+                                    } else {
+                                        Message::ToggleSpecialWorkspace(w.id)
+                                    })
+                                    .width(match (w.id < 0, &w.displayed) {
+                                        (true, _) => Length::Shrink,
+                                        (_, Displayed::Active) => {
+                                            Length::Fixed(theme.space.xl as f32)
+                                        }
+                                        (_, Displayed::Visible) => {
+                                            Length::Fixed(theme.space.lg as f32)
+                                        }
+                                        (_, Displayed::Hidden) => {
+                                            Length::Fixed(theme.space.md as f32)
+                                        }
+                                    })
+                                    .height(theme.space.md)
+                                    .into(),
+                                )
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<Element<'_, _, _>>>(),
+                )
+                .spacing(theme.space.xxs),
             )
-            .spacing(theme.space.xxs),
+            .on_scroll(move |direction| {
+                let delta = match direction {
+                    iced::mouse::ScrollDelta::Lines { y, .. } => y,
+                    iced::mouse::ScrollDelta::Pixels { y, .. } => y,
+                };
+
+                // Scrolling down should increase workspace ID
+                if delta < 0.0 {
+                    Message::Scroll(1)
+                } else {
+                    Message::Scroll(-1)
+                }
+            }),
         )
     }
 

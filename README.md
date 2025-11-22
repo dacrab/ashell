@@ -54,12 +54,21 @@ page for more details.
 
 ### Fedora (Copr)
 
-Unofficial Copr repository (maintained by @killcrb):
+You can install ashell from an **unofficial Fedora Copr repository** (maintained by
+[@killcrb](https://github.com/killcrb)):
+
+- Copr project page: <https://copr.fedorainfracloud.org/coprs/killcrb/ashell>
+- Provides binary packages for Fedora (Workstation / spins) via the standard `dnf` tooling
+
+To enable the repository and install ashell:
 
 ```bash
 sudo dnf -y copr enable killcrb/ashell
 sudo dnf -y install ashell
 ```
+
+If you run into packaging issues that seem specific to Fedora/Copr, please check the
+Copr project page for build status and open an issue on GitHub with details.
 
 ## ⚙️ Configuration
 

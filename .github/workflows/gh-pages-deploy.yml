@@ -48,6 +48,8 @@ jobs:
         uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: latest
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Build developer guide
         run: mdbook build docs/
@@ -61,6 +63,8 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./website/build
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
   deploy:
     name: Deploy

@@ -12,7 +12,7 @@ use iced::{
     stream::channel,
     widget::{Column, column, container, row, scrollable, text},
 };
-use log::error;
+use tracing::error;
 use serde::Deserialize;
 use std::{convert, process::Stdio, time::Duration};
 use tokio::{process, time::sleep};

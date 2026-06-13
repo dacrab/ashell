@@ -17,7 +17,7 @@ use iced::{
     widget::{image, svg},
 };
 use linicon_theme::get_icon_theme;
-use log::{debug, error, info, trace};
+use tracing::{debug, error, info, trace};
 use std::{
     any::TypeId,
     borrow::Cow,
@@ -336,7 +336,7 @@ pub struct StatusNotifierItem {
 }
 
 impl StatusNotifierItem {
-    pub async fn new(conn: &zbus::Connection, name: String) -> anyhow::Result<Self> {
+    pub async fn new(conn: &zbus::Connection, name: String) -> color_eyre::eyre::Result<Self> {
         let (dest, path) = if let Some(idx) = name.find('/') {
             (&name[..idx], &name[idx..])
         } else {
@@ -411,7 +411,7 @@ enum State {
 }
 
 impl TrayService {
-    async fn initialize_data(conn: &zbus::Connection) -> anyhow::Result<TrayData> {
+    async fn initialize_data(conn: &zbus::Connection) -> color_eyre::eyre::Result<TrayData> {
         debug!("initializing tray data");
         let proxy = StatusNotifierWatcherProxy::new(conn).await?;
 
@@ -428,7 +428,7 @@ impl TrayService {
 
     async fn events(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<impl Stream<Item = TrayEvent> + use<>> {
+    ) -> color_eyre::eyre::Result<impl Stream<Item = TrayEvent> + use<>> {
         let watcher = StatusNotifierWatcherProxy::new(conn).await?;
 
         let registered = watcher
@@ -621,7 +621,7 @@ impl TrayService {
     async fn menu_voice_selected(
         menu_proxy: &DBusMenuProxy<'_>,
         id: i32,
-    ) -> anyhow::Result<Layout> {
+    ) -> color_eyre::eyre::Result<Layout> {
         let value = zbus::zvariant::Value::I32(32).try_to_owned()?;
         menu_proxy
             .event(

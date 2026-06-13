@@ -6,7 +6,7 @@ use iced::{
     stream::channel,
 };
 use inotify::{EventMask, Inotify, WatchMask};
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use pipewire::{context::ContextBox, main_loop::MainLoopBox};
 use std::{any::TypeId, fs, ops::Deref, path::Path, thread};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -73,7 +73,7 @@ macro_rules! unwrap_or_send_err {
         match $constructor {
             Ok(val) => val,
             Err(e) => {
-                let _ = $tx.send(Err(anyhow::Error::from(e)));
+                let _ = $tx.send(Err(color_eyre::eyre::Error::from(e)));
                 return;
             }
         }
@@ -81,9 +81,9 @@ macro_rules! unwrap_or_send_err {
 }
 
 impl PrivacyService {
-    async fn create_pipewire_listener() -> anyhow::Result<UnboundedReceiver<PrivacyEvent>> {
+    async fn create_pipewire_listener() -> color_eyre::eyre::Result<UnboundedReceiver<PrivacyEvent>> {
         let (tx, rx) = unbounded_channel::<PrivacyEvent>();
-        let (boot_tx, boot_rx) = tokio::sync::oneshot::channel::<Result<(), anyhow::Error>>();
+        let (boot_tx, boot_rx) = tokio::sync::oneshot::channel::<Result<(), color_eyre::eyre::Error>>();
 
         thread::spawn(move || {
             let mainloop = unwrap_or_send_err!(MainLoopBox::new(None), boot_tx);
@@ -131,13 +131,13 @@ impl PrivacyService {
         match boot_rx.await {
             Ok(Ok(())) => Ok(rx),
             Ok(Err(e)) => Err(e),
-            Err(recv_err) => Err(anyhow::anyhow!(
+            Err(recv_err) => Err(eyre::eyre!(
                 "pipewire thread exited before boot could finish: {recv_err}"
             )),
         }
     }
 
-    async fn webcam_listener() -> anyhow::Result<Box<dyn Stream<Item = PrivacyEvent> + Unpin + Send>>
+    async fn webcam_listener() -> color_eyre::eyre::Result<Box<dyn Stream<Item = PrivacyEvent> + Unpin + Send>>
     {
         let inotify = Inotify::init()?;
 

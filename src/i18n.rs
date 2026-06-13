@@ -6,7 +6,7 @@ use i18n_embed::{
     I18nAssets, LanguageLoader,
     fluent::{FluentLanguageLoader, fluent_language_loader},
 };
-use log::warn;
+use tracing::warn;
 use unic_langid::LanguageIdentifier;
 
 const CATALOGS: &[(&str, &str)] = &[

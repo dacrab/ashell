@@ -10,7 +10,7 @@ use iced::{
     stream::channel,
 };
 use iwd_dbus::IwdDbus;
-use log::{debug, error, info};
+use tracing::{debug, error, info};
 use std::{any::TypeId, ops::Deref, time::Duration};
 use tokio::time::sleep;
 use zbus::zvariant::OwnedObjectPath;
@@ -22,32 +22,32 @@ pub mod iwd_dbus;
 /// This allows abstracting the specific D-Bus implementation (like IWD or `NetworkManager`).
 pub trait NetworkBackend: Send + Sync {
     /// Initializes the backend and fetches the initial network data.
-    async fn initialize_data(&self) -> anyhow::Result<NetworkData>;
+    async fn initialize_data(&self) -> color_eyre::eyre::Result<NetworkData>;
 
     /// Toggles the airplane mode.
-    async fn set_airplane_mode(&self, enable: bool) -> anyhow::Result<()>;
+    async fn set_airplane_mode(&self, enable: bool) -> color_eyre::eyre::Result<()>;
 
     /// Scans for nearby Wi-Fi networks.
-    async fn scan_nearby_wifi(&self) -> anyhow::Result<()>;
+    async fn scan_nearby_wifi(&self) -> color_eyre::eyre::Result<()>;
 
     /// Enables or disables Wi-Fi.
-    async fn set_wifi_enabled(&self, enable: bool) -> anyhow::Result<()>;
+    async fn set_wifi_enabled(&self, enable: bool) -> color_eyre::eyre::Result<()>;
 
     /// Connects to a specific access point, potentially with a password.
     async fn select_access_point(
         &self,
         ap: &AccessPoint,
         password: Option<String>,
-    ) -> anyhow::Result<()>;
+    ) -> color_eyre::eyre::Result<()>;
 
-    async fn known_connections(&self) -> anyhow::Result<Vec<KnownConnection>>;
+    async fn known_connections(&self) -> color_eyre::eyre::Result<Vec<KnownConnection>>;
 
     /// Enables or disables a VPN connection.
     async fn set_vpn(
         &self,
         connection_path: OwnedObjectPath,
         enable: bool,
-    ) -> anyhow::Result<Vec<KnownConnection>>;
+    ) -> color_eyre::eyre::Result<Vec<KnownConnection>>;
 }
 
 #[derive(Debug, Clone)]
@@ -307,7 +307,7 @@ struct BackendChoiceWithConnection {
 }
 
 impl NetworkBackend for BackendChoiceWithConnection {
-    async fn initialize_data(&self) -> anyhow::Result<NetworkData> {
+    async fn initialize_data(&self) -> color_eyre::eyre::Result<NetworkData> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn).await?.initialize_data().await
@@ -316,7 +316,7 @@ impl NetworkBackend for BackendChoiceWithConnection {
         }
     }
 
-    async fn set_airplane_mode(&self, enable: bool) -> anyhow::Result<()> {
+    async fn set_airplane_mode(&self, enable: bool) -> color_eyre::eyre::Result<()> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn)
@@ -333,7 +333,7 @@ impl NetworkBackend for BackendChoiceWithConnection {
         }
     }
 
-    async fn scan_nearby_wifi(&self) -> anyhow::Result<()> {
+    async fn scan_nearby_wifi(&self) -> color_eyre::eyre::Result<()> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn).await?.scan_nearby_wifi().await
@@ -342,7 +342,7 @@ impl NetworkBackend for BackendChoiceWithConnection {
         }
     }
 
-    async fn set_wifi_enabled(&self, enable: bool) -> anyhow::Result<()> {
+    async fn set_wifi_enabled(&self, enable: bool) -> color_eyre::eyre::Result<()> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn)
@@ -363,7 +363,7 @@ impl NetworkBackend for BackendChoiceWithConnection {
         &self,
         ap: &AccessPoint,
         password: Option<String>,
-    ) -> anyhow::Result<()> {
+    ) -> color_eyre::eyre::Result<()> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn)
@@ -384,7 +384,7 @@ impl NetworkBackend for BackendChoiceWithConnection {
         &self,
         connection_path: OwnedObjectPath,
         enable: bool,
-    ) -> anyhow::Result<Vec<KnownConnection>> {
+    ) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn)
@@ -393,11 +393,11 @@ impl NetworkBackend for BackendChoiceWithConnection {
                     .await
             }
             // IWD does not handle VPNs directly
-            BackendChoice::Iwd => Err(anyhow::anyhow!("IWD does not support VPN management")),
+            BackendChoice::Iwd => Err(eyre::eyre!("IWD does not support VPN management")),
         }
     }
 
-    async fn known_connections(&self) -> anyhow::Result<Vec<KnownConnection>> {
+    async fn known_connections(&self) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn)

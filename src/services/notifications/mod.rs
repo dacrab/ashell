@@ -4,7 +4,7 @@ use iced::Subscription;
 use iced::futures::{StreamExt, channel::mpsc::Sender, stream::pending};
 use iced::stream::channel;
 use iced::widget::{image, svg};
-use log::{error, info};
+use tracing::{error, info};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -107,7 +107,7 @@ pub struct NotificationsService {
 }
 
 impl NotificationsService {
-    async fn init_service() -> anyhow::Result<(Connection, broadcast::Sender<NotificationEvent>)> {
+    async fn init_service() -> color_eyre::eyre::Result<(Connection, broadcast::Sender<NotificationEvent>)> {
         let (connection, event_tx) = dbus::NotificationDaemon::start_server().await?;
         Ok((connection, event_tx))
     }

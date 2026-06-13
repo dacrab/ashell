@@ -1,5 +1,5 @@
 use super::NotificationIcon;
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use std::collections::HashMap;
 use std::time::SystemTime;
 use tokio::sync::broadcast;
@@ -161,12 +161,12 @@ impl NotificationDaemon {
 }
 
 impl NotificationDaemon {
-    pub async fn start_server() -> anyhow::Result<(Connection, broadcast::Sender<NotificationEvent>)>
+    pub async fn start_server() -> color_eyre::eyre::Result<(Connection, broadcast::Sender<NotificationEvent>)>
     {
         Self::init_server().await
     }
 
-    async fn init_server() -> anyhow::Result<(Connection, broadcast::Sender<NotificationEvent>)> {
+    async fn init_server() -> color_eyre::eyre::Result<(Connection, broadcast::Sender<NotificationEvent>)> {
         let (event_tx, _rx) = broadcast::channel(100);
 
         let connection = zbus::connection::Connection::session().await?;
@@ -191,7 +191,7 @@ impl NotificationDaemon {
         connection: &Connection,
         id: u32,
         action_key: String,
-    ) -> anyhow::Result<()> {
+    ) -> color_eyre::eyre::Result<()> {
         connection
             .emit_signal(
                 None::<&str>,
@@ -204,7 +204,7 @@ impl NotificationDaemon {
         Ok(())
     }
 
-    pub async fn close_notification_by_id(connection: &Connection, id: u32) -> anyhow::Result<()> {
+    pub async fn close_notification_by_id(connection: &Connection, id: u32) -> color_eyre::eyre::Result<()> {
         // Get the object server interface to call the method properly
         let iface_ref = connection
             .object_server()

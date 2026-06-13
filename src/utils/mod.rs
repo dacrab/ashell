@@ -11,7 +11,7 @@ pub mod remote_value;
 /// error.
 pub async fn send_or_log<T: std::fmt::Debug>(output: &mut mpsc::Sender<T>, msg: T) {
     if let Err(e) = output.send(msg).await {
-        log::warn!("Channel send failed (receiver dropped): {e:?}");
+        tracing::warn!("Channel send failed (receiver dropped): {e:?}");
     }
 }
 

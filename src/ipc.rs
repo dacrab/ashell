@@ -9,7 +9,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use anyhow::{Context, Result, anyhow};
+use color_eyre::eyre::{Context, Result, eyre};
 use clap::Subcommand;
 use iced::Subscription;
 
@@ -109,7 +109,7 @@ impl fmt::Display for IpcCommand {
 }
 
 impl FromStr for IpcCommand {
-    type Err = anyhow::Error;
+    type Err = color_eyre::eyre::Error;
 
     fn from_str(s: &str) -> Result<Self> {
         let (cmd, no_osd) = match s.strip_suffix(NO_OSD_SUFFIX) {
@@ -128,7 +128,7 @@ impl FromStr for IpcCommand {
             "brightness-down" => Ok(IpcCommand::BrightnessDown { no_osd }),
             "toggle-airplane-mode" => Ok(IpcCommand::ToggleAirplaneMode { no_osd }),
             "toggle-idle-inhibitor" => Ok(IpcCommand::ToggleIdleInhibitor { no_osd }),
-            _ => Err(anyhow!("unknown IPC command: {s:?}")),
+            _ => Err(eyre!("unknown IPC command: {s:?}")),
         }
     }
 }
@@ -168,7 +168,7 @@ pub fn run_client(cmd: &IpcCommand) -> Result<()> {
     let response = response.trim_end();
 
     if let Some(err) = response.strip_prefix("error ") {
-        return Err(anyhow!("{err}"));
+        return Err(eyre!("{err}"));
     }
 
     if !response.is_empty() {
@@ -184,7 +184,7 @@ pub fn run_client(cmd: &IpcCommand) -> Result<()> {
 enum ListenerError {
     /// Another ashell instance is already listening on the socket.
     AlreadyRunning,
-    Other(anyhow::Error),
+    Other(color_eyre::eyre::Error),
 }
 
 /// Create the Unix listener, taking care not to steal a live server's socket.
@@ -203,15 +203,14 @@ fn create_listener() -> std::result::Result<UnixListener, ListenerError> {
                 && e.kind() != std::io::ErrorKind::NotFound
             {
                 return Err(ListenerError::Other(
-                    anyhow::Error::new(e)
-                        .context(format!("remove stale socket {}", path.display())),
+                    color_eyre::eyre::eyre!("remove stale socket {}: {e}", path.display()),
                 ));
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
             return Err(ListenerError::Other(
-                anyhow::Error::new(e).context(format!("probe socket {}", path.display())),
+                color_eyre::eyre::eyre!("probe socket {}: {e}", path.display()),
             ));
         }
     }
@@ -223,7 +222,7 @@ fn create_listener() -> std::result::Result<UnixListener, ListenerError> {
         .set_nonblocking(true)
         .context("set_nonblocking")
         .map_err(ListenerError::Other)?;
-    log::info!("IPC listening on {}", path.display());
+    tracing::info!("IPC listening on {}", path.display());
     Ok(listener)
 }
 
@@ -240,7 +239,7 @@ fn read_request(stream: &UnixStream) -> Result<IpcCommand> {
 fn write_response(stream: &mut UnixStream, response: &str) {
     let msg = format!("{response}\n");
     if let Err(e) = stream.write_all(msg.as_bytes()) {
-        log::debug!("IPC write response failed: {e}");
+        tracing::debug!("IPC write response failed: {e}");
     }
 }
 
@@ -262,20 +261,20 @@ fn init_listener() -> Option<tokio::net::UnixListener> {
     let std_listener = match create_listener() {
         Ok(l) => l,
         Err(ListenerError::AlreadyRunning) => {
-            log::warn!(
+            tracing::warn!(
                 "another ashell instance owns the IPC socket; this instance will run without IPC"
             );
             return None;
         }
         Err(ListenerError::Other(e)) => {
-            log::error!("Failed to create IPC listener: {e:#}");
+            tracing::error!("Failed to create IPC listener: {e:#}");
             return None;
         }
     };
     match tokio::net::UnixListener::from_std(std_listener) {
         Ok(l) => Some(l),
         Err(e) => {
-            log::error!("Failed to convert IPC listener to tokio: {e}");
+            tracing::error!("Failed to convert IPC listener to tokio: {e}");
             None
         }
     }
@@ -296,14 +295,14 @@ pub fn subscription() -> Subscription<IpcCommand> {
                     let request = match stream.into_std() {
                         Ok(std_stream) => handle_connection(std_stream),
                         Err(e) => {
-                            log::error!("IPC stream conversion error: {e}");
+                            tracing::error!("IPC stream conversion error: {e}");
                             None
                         }
                     };
                     (request, listener)
                 }
                 Err(e) => {
-                    log::error!("IPC accept error: {e}");
+                    tracing::error!("IPC accept error: {e}");
                     (None, listener)
                 }
             };

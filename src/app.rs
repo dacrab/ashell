@@ -2,7 +2,6 @@ use crate::{
     HEIGHT,
     components::{Centerbox, menu::MenuType},
     config::{self, AppearanceStyle, Config, Modules, Position},
-    get_log_spec,
     i18n::{Localizer, init_localizer},
     ipc::IpcCommand,
     modules::{
@@ -26,7 +25,6 @@ use crate::{
     services::ReadOnlyService,
     theme::{AshellTheme, backdrop_color, darken_color, init_theme, use_theme},
 };
-use flexi_logger::LoggerHandle;
 use iced::{
     Alignment, Color, Element, Gradient, Length, OutputEvent, Radians, Subscription, SurfaceId,
     Task, Theme,
@@ -35,7 +33,7 @@ use iced::{
     keyboard, set_exclusive_zone,
     widget::{Row, container, mouse_area},
 };
-use log::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use std::{collections::HashMap, f32::consts::PI, path::PathBuf};
 
 mod message;
@@ -57,7 +55,6 @@ pub struct GeneralConfig {
 
 pub struct App {
     config_path: PathBuf,
-    logger: LoggerHandle,
     pub general_config: GeneralConfig,
     pub outputs: Outputs,
     pub custom: HashMap<String, Custom>,
@@ -81,7 +78,7 @@ pub use message::Message;
 
 impl App {
     pub fn new(
-        (logger, config, config_path): (LoggerHandle, Config, PathBuf),
+        (config, config_path): (Config, PathBuf),
     ) -> impl FnOnce() -> (Self, Task<Message>) {
         move || {
             let outputs = Outputs::new(
@@ -110,7 +107,6 @@ impl App {
             (
                 App {
                     config_path,
-                    logger,
                     general_config: GeneralConfig {
                         outputs: config.outputs,
                         modules: config.modules,
@@ -235,7 +231,9 @@ impl App {
                     ));
                 }
 
-                self.logger.set_new_spec(get_log_spec(&config.log_level));
+                if let Some(setter) = crate::SET_LOG_LEVEL.get() {
+                    setter(&config.log_level);
+                }
                 self.refresh_config(config);
 
                 Task::batch(tasks)
@@ -732,7 +730,7 @@ impl App {
                         })
                         .boxed(),
                     Err(e) => {
-                        log::error!("Failed to create signal stream: {e}");
+                        error!("Failed to create signal stream: {e}");
                         iced::futures::stream::empty().boxed()
                     }
                 }

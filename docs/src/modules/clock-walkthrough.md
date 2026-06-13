@@ -10,7 +10,7 @@ The Clock module was the simplest module in ashell at just 60 lines. It's an ide
 use crate::{config::ClockModuleConfig, theme::AshellTheme};
 use chrono::{DateTime, Local};
 use iced::{Element, Subscription, time::every, widget::text};
-use log::warn;
+use tracing::warn;
 use std::time::Duration;
 
 // 1. Message enum — defines what events this module handles

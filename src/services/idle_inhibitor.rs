@@ -1,5 +1,5 @@
 use crate::components::icons::StaticIcon;
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use wayland_client::{
     Connection, Dispatch, DispatchError, EventQueue, Proxy, QueueHandle,
@@ -61,7 +61,7 @@ pub struct IdleInhibitorManager {
 
 impl IdleInhibitorManager {
     pub fn new() -> Option<Self> {
-        let init = || -> anyhow::Result<Self> {
+        let init = || -> color_eyre::eyre::Result<Self> {
             let connection = Connection::connect_to_env()?;
             let display = connection.display();
             let event_queue = connection.new_event_queue();
@@ -146,7 +146,7 @@ impl IdleInhibitorManager {
         self.data.layer_surface = Some(layer_surface);
     }
 
-    fn roundtrip(&mut self) -> anyhow::Result<usize, DispatchError> {
+    fn roundtrip(&mut self) -> color_eyre::eyre::Result<usize, DispatchError> {
         self.event_queue.roundtrip(&mut self.data)
     }
 
@@ -166,7 +166,7 @@ impl IdleInhibitorManager {
         }
     }
 
-    fn set_inhibit_idle(&mut self, inhibit_idle: bool) -> anyhow::Result<()> {
+    fn set_inhibit_idle(&mut self, inhibit_idle: bool) -> color_eyre::eyre::Result<()> {
         let data = &self.data;
         let Some((idle_manager, _)) = &data.idle_manager else {
             warn!(target: "IdleInhibitor::set_inhibit_idle", "Tried to change idle inhibitor status without loaded idle inhibitor manager!");

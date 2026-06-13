@@ -14,7 +14,7 @@ use iced::{
     stream::channel,
     widget::image,
 };
-use log::{debug, error, info};
+use tracing::{debug, error, info};
 use std::{
     any::TypeId,
     collections::{HashMap, HashSet},
@@ -185,7 +185,7 @@ impl ReadOnlyService for MprisPlayerService {
 
 const MPRIS_PLAYER_SERVICE_PREFIX: &str = "org.mpris.MediaPlayer2.";
 
-type CoverDownloadFuture = BoxFuture<'static, Result<(String, anyhow::Result<Bytes>), Aborted>>;
+type CoverDownloadFuture = BoxFuture<'static, Result<(String, color_eyre::eyre::Result<Bytes>), Aborted>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DbusEvent {
@@ -194,7 +194,7 @@ enum DbusEvent {
 }
 
 impl MprisPlayerService {
-    async fn initialize_data(conn: &zbus::Connection) -> anyhow::Result<Vec<MprisPlayerData>> {
+    async fn initialize_data(conn: &zbus::Connection) -> color_eyre::eyre::Result<Vec<MprisPlayerData>> {
         let dbus = DBusProxy::new(conn).await?;
         let names = Self::get_player_names(&dbus).await?;
         debug!("Found MPRIS player services: {names:?}");
@@ -202,7 +202,7 @@ impl MprisPlayerService {
         Ok(Self::get_mpris_player_data(conn, &names).await)
     }
 
-    async fn get_player_names(dbus: &DBusProxy<'_>) -> anyhow::Result<Vec<String>> {
+    async fn get_player_names(dbus: &DBusProxy<'_>) -> color_eyre::eyre::Result<Vec<String>> {
         let names: Vec<String> = dbus
             .list_names()
             .await?
@@ -223,7 +223,7 @@ impl MprisPlayerService {
         names: &[String],
     ) -> Vec<(String, MprisPlayerProxy<'static>)> {
         let proxies: Vec<_> = join_all(names.iter().map(
-            async |s| -> anyhow::Result<(String, MprisPlayerProxy<'static>)> {
+            async |s| -> color_eyre::eyre::Result<(String, MprisPlayerProxy<'static>)> {
                 let proxy = MprisPlayerProxy::new(conn, s.to_string()).await?;
                 Ok((s.to_string(), proxy))
             },
@@ -271,7 +271,7 @@ impl MprisPlayerService {
 
     async fn dbus_events(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<impl Stream<Item = DbusEvent> + use<>> {
+    ) -> color_eyre::eyre::Result<impl Stream<Item = DbusEvent> + use<>> {
         let dbus = DBusProxy::new(conn).await?;
 
         let mut combined = SelectAll::new();
@@ -497,7 +497,7 @@ impl MprisPlayerService {
         }
     }
 
-    async fn fetch_cover(url: &str) -> anyhow::Result<Bytes> {
+    async fn fetch_cover(url: &str) -> color_eyre::eyre::Result<Bytes> {
         let url = Url::parse(url)?;
         match url.scheme() {
             "http" | "https" => {
@@ -507,10 +507,10 @@ impl MprisPlayerService {
             "file" => {
                 let path = url
                     .to_file_path()
-                    .map_err(|_| anyhow::anyhow!("Invalid file URL {}", url))?;
+                    .map_err(|_| eyre::eyre!("Invalid file URL {}", url))?;
                 Ok(tokio::fs::read(path).await?.into())
             }
-            _ => anyhow::bail!("Unsupported URL scheme: {}", url.scheme()),
+            _ => color_eyre::eyre::bail!("Unsupported URL scheme: {}", url.scheme()),
         }
     }
 }

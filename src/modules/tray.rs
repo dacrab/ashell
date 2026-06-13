@@ -19,7 +19,7 @@ use iced::{
     Alignment, Element, Length, Padding, Subscription, SurfaceId, Task,
     widget::{Column, Image, Row, Svg, container, scrollable, text, toggler},
 };
-use log::debug;
+use tracing::debug;
 
 const MENU_MAX_HEIGHT: f32 = 600.;
 

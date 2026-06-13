@@ -21,7 +21,7 @@ use iced::{
     Alignment, Element, Length, Padding, Subscription, SurfaceId, Task, Theme,
     widget::{Column, column, container, row, scrollable, text, toggler},
 };
-use log::{info, warn};
+use tracing::{info, warn};
 
 static WIFI_SIGNAL_ICONS: [StaticIcon; 6] = [
     StaticIcon::Wifi0,

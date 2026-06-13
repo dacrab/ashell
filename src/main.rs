@@ -2,15 +2,20 @@ use crate::config::{Position, get_config};
 use crate::outputs::Outputs;
 use app::App;
 use clap::Parser;
-use flexi_logger::{
-    Age, Cleanup, Criterion, FileSpec, LogSpecBuilder, LogSpecification, Logger, Naming,
-};
+use color_eyre::eyre::Context;
 use iced::{Anchor, Font, KeyboardInteractivity, Layer, LayerShellSettings};
-use log::{debug, error, warn};
-use std::backtrace::Backtrace;
 use std::env;
-use std::panic;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+use tracing::{debug, error};
+use tracing_subscriber::layer::Layer as _;
+use tracing_subscriber::{
+    EnvFilter,
+    filter::LevelFilter,
+    layer::SubscriberExt,
+    reload,
+    util::SubscriberInitExt,
+};
 
 mod app;
 mod components;
@@ -30,7 +35,8 @@ const NERD_FONT_MONO: &[u8] =
     include_bytes!("../target/generated/SymbolsNerdFontMono-Regular-Subset.ttf");
 const CUSTOM_FONT: &[u8] = include_bytes!("../assets/AshellCustomIcon-Regular.otf");
 const HEIGHT: f64 = 34.;
-const TMP_FILE_SIZE: u64 = 10 * 1024 * 1024;
+type LogSetter = Box<dyn Fn(&str) + Send + Sync>;
+pub(crate) static SET_LOG_LEVEL: OnceLock<LogSetter> = OnceLock::new();
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,20 +60,58 @@ enum Command {
     },
 }
 
-fn get_log_spec(log_level: &str) -> LogSpecification {
-    let new_spec = LogSpecification::env_or_parse(log_level);
+fn main() -> color_eyre::eyre::Result<()> {
+    color_eyre::install()?;
 
-    match new_spec {
-        Ok(spec) => spec,
-        Err(err) => {
-            warn!("Failed to parse log level: {err}, use the default");
+    let (filter, reload_handle) = reload::Layer::new(EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy());
 
-            LogSpecification::default()
-        }
-    }
-}
+    SET_LOG_LEVEL
+        .set(Box::new({
+            let handle = reload_handle.clone();
+            move |level_str: &str| {
+                let new_filter = EnvFilter::builder()
+                    .with_default_directive(
+                        level_str
+                            .parse::<LevelFilter>()
+                            .unwrap_or(LevelFilter::INFO)
+                            .into(),
+                    )
+                    .from_env_lossy();
+                let _ = handle.reload(new_filter);
+            }
+        }))
+        .ok();
 
-fn main() -> iced::Result {
+    let logdir = xdg::get_runtime_dir()
+        .unwrap_or_else(|| [env::temp_dir(), PathBuf::from("ashell")].iter().collect());
+    let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("ashell")
+        .max_log_files(7)
+        .build(logdir)
+        .wrap_err("Failed to create log file appender")?;
+
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(true)
+                .with_filter(EnvFilter::builder()
+                    .with_default_directive(LevelFilter::WARN.into())
+                    .from_env_lossy()),
+        )
+        .init();
+
     let args = Args::parse();
 
     if let Some(Command::Msg { command }) = &args.command {
@@ -80,47 +124,20 @@ fn main() -> iced::Result {
 
     debug!("args: {args:?}");
 
-    let logdir = xdg::get_runtime_dir()
-        .unwrap_or_else(|| [env::temp_dir(), PathBuf::from("ashell")].iter().collect());
-    let logger = Logger::with(
-        LogSpecBuilder::new()
-            .default(log::LevelFilter::Info)
-            .build(),
-    )
-    .log_to_file(FileSpec::default().directory(logdir))
-    .duplicate_to_stdout(flexi_logger::Duplicate::All)
-    .rotate(
-        Criterion::AgeOrSize(Age::Day, TMP_FILE_SIZE),
-        Naming::Timestamps,
-        Cleanup::KeepLogFiles(7),
-    );
-    let logger = if cfg!(debug_assertions) {
-        logger.duplicate_to_stdout(flexi_logger::Duplicate::All)
-    } else {
-        logger
-    };
-    let logger = logger.start().unwrap_or_else(|e| {
-        eprintln!("Failed to initialize file logger: {e}, falling back to stderr-only");
-        Logger::with(
-            LogSpecBuilder::new()
-                .default(log::LevelFilter::Info)
-                .build(),
-        )
-        .start()
-        .expect("critical: cannot initialize any logger")
-    });
-    panic::set_hook(Box::new(|info| {
-        let b = Backtrace::capture();
-        error!("Panic: {info} \n {b}");
-    }));
-
     let (config, config_path) = get_config(args.config_path).unwrap_or_else(|err| {
         error!("Failed to read config: {err}");
-
         std::process::exit(1);
     });
 
-    logger.set_new_spec(get_log_spec(&config.log_level));
+    reload_handle.reload(
+        EnvFilter::builder()
+            .with_default_directive(
+                config.log_level.parse::<LevelFilter>()
+                    .unwrap_or(LevelFilter::INFO)
+                    .into(),
+            )
+            .from_env_lossy(),
+    ).wrap_err("Failed to set initial log level")?;
 
     let font = if let Some(font_name) = &config.appearance.font_name {
         Font::with_name(Box::leak(font_name.clone().into_boxed_str()))
@@ -136,8 +153,10 @@ fn main() -> iced::Result {
         config::Layer::Overlay => Layer::Overlay,
     };
 
+    let app = App::new((config.clone(), config_path));
+
     iced::application(
-        App::new((logger, config.clone(), config_path)),
+        app,
         App::update,
         App::view,
     )
@@ -161,5 +180,7 @@ fn main() -> iced::Result {
     .font(NERD_FONT_MONO)
     .font(CUSTOM_FONT)
     .default_font(font)
-    .run()
+    .run()?;
+
+    Ok(())
 }

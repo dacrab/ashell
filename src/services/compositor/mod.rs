@@ -33,14 +33,14 @@ async fn broadcaster_subscribe() -> broadcast::Receiver<ServiceEvent<CompositorS
 
 async fn broadcaster_event_loop(tx: broadcast::Sender<ServiceEvent<CompositorService>>) {
     let Some(backend) = detect_backend() else {
-        log::error!("No supported compositor backend found");
+        tracing::error!("No supported compositor backend found");
         let _ = tx.send(ServiceEvent::Error(
             "No supported compositor backend found".into(),
         ));
         return;
     };
 
-    log::info!("Starting compositor event loop with {:?} backend", backend);
+    tracing::info!("Starting compositor event loop with {:?} backend", backend);
 
     let result = match backend {
         CompositorChoice::Hyprland => hyprland::run_listener(&tx).await,
@@ -48,7 +48,7 @@ async fn broadcaster_event_loop(tx: broadcast::Sender<ServiceEvent<CompositorSer
     };
 
     if let Err(e) = result {
-        log::error!("Compositor event loop failed: {}", e);
+        tracing::error!("Compositor event loop failed: {}", e);
         let _ = tx.send(ServiceEvent::Error(e.to_string()));
     }
 }
@@ -98,7 +98,7 @@ impl ReadOnlyService for CompositorService {
                         backend,
                     };
                     if output.send(ServiceEvent::Init(empty_init)).await.is_err() {
-                        log::debug!("Compositor subscriber disconnected before receiving Init");
+                        tracing::debug!("Compositor subscriber disconnected before receiving Init");
                         return;
                     }
                 }
@@ -107,15 +107,15 @@ impl ReadOnlyService for CompositorService {
                     match rx.recv().await {
                         Ok(event) => {
                             if output.send(event).await.is_err() {
-                                log::debug!("Compositor subscriber disconnected");
+                                tracing::debug!("Compositor subscriber disconnected");
                                 break;
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            log::warn!("Compositor subscriber lagged by {} messages", n);
+                            tracing::warn!("Compositor subscriber lagged by {} messages", n);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            log::error!("Compositor broadcaster closed unexpectedly");
+                            tracing::error!("Compositor broadcaster closed unexpectedly");
                             break;
                         }
                     }

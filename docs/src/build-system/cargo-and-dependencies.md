@@ -62,9 +62,11 @@ The dependency is aliased as `iced` in `Cargo.toml` (`package = "iced_layershell
 | `regex` | 1.12.2 | Regular expressions (config parsing) |
 | `hex_color` | 3 | Hex color parsing in config |
 | `itertools` | 0.14 | Iterator utilities |
-| `anyhow` | 1 | Error handling |
-| `log` | 0.4 | Logging facade |
-| `flexi_logger` | 0.31 | Logging implementation |
+| `color-eyre` | 0.6 | Error handling (panic/error reporting with backtraces) |
+| `eyre` | 0.6 | Error handling (flexible `Error`/`Result` types) |
+| `tracing` | 0.1 | Structured logging facade |
+| `tracing-subscriber` | 0.3 | Log subscriber with env-filter, JSON, reload |
+| `tracing-appender` | 0.2 | Rolling file appender for log output |
 | `signal-hook` | 0.4.3 | Unix signal handling (SIGUSR1) |
 | `reqwest` | 0.13 | HTTP client (weather data) |
 | `uuid` | 1 | UUID generation |

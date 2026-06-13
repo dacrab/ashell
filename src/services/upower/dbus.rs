@@ -1,5 +1,5 @@
 use super::ChargeLimit;
-use log::debug;
+use tracing::debug;
 use std::ops::Deref;
 use zbus::{
     proxy,
@@ -91,7 +91,7 @@ impl SystemBattery {
         }
     }
 
-    pub async fn percentage(&self) -> anyhow::Result<f64> {
+    pub async fn percentage(&self) -> color_eyre::eyre::Result<f64> {
         // For single battery systems, use UPower's Percentage property directly.
         // This avoids issues where some hardware (e.g. Framework 13 AMD AI) reports
         // energy/energy_full as 0 via ACPI, while UPower's own percentage is correct.
@@ -112,7 +112,7 @@ impl SystemBattery {
         }
 
         if energy_full == 0.0 {
-            anyhow::bail!("No battery capacity data available");
+            color_eyre::eyre::bail!("No battery capacity data available");
         }
 
         Ok(energy / energy_full * 100.0)
@@ -308,13 +308,13 @@ impl TryFrom<u32> for UpDeviceKind {
 }
 
 impl UPowerDbus<'_> {
-    pub async fn new(conn: &zbus::Connection) -> anyhow::Result<Self> {
+    pub async fn new(conn: &zbus::Connection) -> color_eyre::eyre::Result<Self> {
         let nm = UPowerProxy::new(conn).await?;
 
         Ok(Self(nm))
     }
 
-    pub async fn get_system_batteries(&self) -> anyhow::Result<Option<SystemBattery>> {
+    pub async fn get_system_batteries(&self) -> color_eyre::eyre::Result<Option<SystemBattery>> {
         self.get_battery_devices(|device_type, power_supply| {
             device_type.is_power_source() && power_supply
         })
@@ -328,7 +328,7 @@ impl UPowerDbus<'_> {
         })
     }
 
-    pub async fn get_peripheral_batteries(&self) -> anyhow::Result<Vec<DeviceProxy<'static>>> {
+    pub async fn get_peripheral_batteries(&self) -> color_eyre::eyre::Result<Vec<DeviceProxy<'static>>> {
         self.get_battery_devices(|device_type, power_supply| {
             device_type.is_peripheral() && !power_supply
         })
@@ -338,7 +338,7 @@ impl UPowerDbus<'_> {
     pub async fn get_device(
         &self,
         path: &ObjectPath<'static>,
-    ) -> anyhow::Result<DeviceProxy<'static>> {
+    ) -> color_eyre::eyre::Result<DeviceProxy<'static>> {
         let device = DeviceProxy::builder(self.inner().connection())
             .path(path)?
             .build()
@@ -350,7 +350,7 @@ impl UPowerDbus<'_> {
     async fn get_battery_devices(
         &self,
         f: fn(UpDeviceKind, bool) -> bool,
-    ) -> anyhow::Result<Vec<DeviceProxy<'static>>> {
+    ) -> color_eyre::eyre::Result<Vec<DeviceProxy<'static>>> {
         let devices = self.enumerate_devices().await?;
 
         debug!("Found {} devices", devices.len());

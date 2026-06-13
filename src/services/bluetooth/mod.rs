@@ -7,7 +7,7 @@ use iced::{
     stream::channel,
 };
 use inotify::{Inotify, WatchMask};
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use std::{any::TypeId, io::ErrorKind, ops::Deref, pin::Pin};
 use tokio::process::Command;
 use zbus::zvariant::OwnedObjectPath;
@@ -71,7 +71,7 @@ enum State {
 }
 
 impl BluetoothService {
-    async fn initialize_data(conn: &zbus::Connection) -> anyhow::Result<BluetoothData> {
+    async fn initialize_data(conn: &zbus::Connection) -> color_eyre::eyre::Result<BluetoothData> {
         let bluetooth = BluetoothDbus::new(conn).await?;
 
         let state = bluetooth.state().await?;
@@ -92,7 +92,7 @@ impl BluetoothService {
         })
     }
 
-    async fn events(conn: &zbus::Connection) -> anyhow::Result<impl Stream<Item = ()> + use<>> {
+    async fn events(conn: &zbus::Connection) -> color_eyre::eyre::Result<impl Stream<Item = ()> + use<>> {
         let bluetooth = BluetoothDbus::new(conn).await?;
 
         let interface_changed = stream_select!(
@@ -246,7 +246,7 @@ impl BluetoothService {
         BluetoothService::spawn_rfkill("rfkill", args).await
     }
 
-    pub async fn check_rfkill_soft_block() -> anyhow::Result<bool> {
+    pub async fn check_rfkill_soft_block() -> color_eyre::eyre::Result<bool> {
         let output = match BluetoothService::run_rfkill_command(&["list", "bluetooth"]).await {
             Ok(output) => output,
             Err(err) if err.kind() == ErrorKind::NotFound => {
@@ -261,7 +261,7 @@ impl BluetoothService {
         Ok(output.contains("Soft blocked: yes"))
     }
 
-    pub async fn listen_rfkill_soft_block_changes() -> anyhow::Result<EventStream> {
+    pub async fn listen_rfkill_soft_block_changes() -> color_eyre::eyre::Result<EventStream> {
         let inotify = Inotify::init()?;
 
         match inotify.watches().add("/dev/rfkill", WatchMask::MODIFY) {
@@ -277,7 +277,7 @@ impl BluetoothService {
         }
     }
 
-    async fn toggle_power(conn: &zbus::Connection, power: bool) -> anyhow::Result<()> {
+    async fn toggle_power(conn: &zbus::Connection, power: bool) -> color_eyre::eyre::Result<()> {
         let bluetooth = BluetoothDbus::new(conn).await?;
 
         bluetooth.set_powered(power).await?;

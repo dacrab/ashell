@@ -3,7 +3,7 @@ use super::types::{
     CompositorState, CompositorWorkspace,
 };
 use crate::services::{ServiceEvent, compositor::CompositorService};
-use anyhow::Result;
+use color_eyre::eyre::Result;
 use hyprland::{
     data::{Client, Devices, Monitors, Workspace, Workspaces},
     dispatch::{Dispatch, DispatchType, WorkspaceIdentifierWithSpecial},
@@ -106,7 +106,7 @@ pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>
     {
         let state_guard = internal_state
             .read()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            .map_err(|e| eyre::eyre!(e.to_string()))?;
 
         match fetch_full_state(&state_guard) {
             Ok(state) => {
@@ -115,7 +115,7 @@ pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>
                 )));
             }
             Err(e) => {
-                log::error!("Failed to fetch initial compositor state: {}", e);
+                tracing::error!("Failed to fetch initial compositor state: {}", e);
             }
         }
     }
@@ -181,7 +181,7 @@ pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>
     listener
         .start_listener_async()
         .await
-        .map_err(|e| anyhow::anyhow!(e))
+        .map_err(|e| eyre::eyre!(e))
 }
 
 fn fetch_full_state(internal_state: &HyprInternalState) -> Result<CompositorState> {

@@ -6,7 +6,7 @@ use crate::services::{
 use super::{AccessPoint, ActiveConnectionInfo, KnownConnection, Vpn};
 use iced::futures::{Stream, StreamExt, stream::select_all};
 use itertools::Itertools;
-use log::{debug, warn};
+use tracing::{debug, warn};
 use std::{collections::HashMap, ops::Deref};
 use tokio::process::Command;
 use zbus::{
@@ -17,7 +17,7 @@ use zbus::{
 pub struct NetworkDbus<'a>(NetworkManagerProxy<'a>);
 
 impl super::NetworkBackend for NetworkDbus<'_> {
-    async fn initialize_data(&self) -> anyhow::Result<super::NetworkData> {
+    async fn initialize_data(&self) -> color_eyre::eyre::Result<super::NetworkData> {
         let nm = self;
 
         // airplane mode
@@ -56,7 +56,7 @@ impl super::NetworkBackend for NetworkDbus<'_> {
         })
     }
 
-    async fn set_airplane_mode(&self, enable: bool) -> anyhow::Result<()> {
+    async fn set_airplane_mode(&self, enable: bool) -> color_eyre::eyre::Result<()> {
         let rfkill_res = Command::new("/usr/sbin/rfkill")
             .arg(if enable { "block" } else { "unblock" })
             .arg("bluetooth")
@@ -75,12 +75,12 @@ impl super::NetworkBackend for NetworkDbus<'_> {
         Ok(())
     }
 
-    async fn scan_nearby_wifi(&self) -> anyhow::Result<()> {
+    async fn scan_nearby_wifi(&self) -> color_eyre::eyre::Result<()> {
         self.scan_nearby_wifi_with_devices().await?;
         Ok(())
     }
 
-    async fn set_wifi_enabled(&self, enable: bool) -> anyhow::Result<()> {
+    async fn set_wifi_enabled(&self, enable: bool) -> color_eyre::eyre::Result<()> {
         self.set_wireless_enabled(enable).await?;
         Ok(())
     }
@@ -89,7 +89,7 @@ impl super::NetworkBackend for NetworkDbus<'_> {
         &self,
         access_point: &AccessPoint,
         password: Option<String>,
-    ) -> anyhow::Result<()> {
+    ) -> color_eyre::eyre::Result<()> {
         let settings = NetworkSettingsDbus::new(self.0.inner().connection()).await?;
         let connection = settings.find_connection(&access_point.ssid).await?;
 
@@ -158,7 +158,7 @@ impl super::NetworkBackend for NetworkDbus<'_> {
         &self,
         connection: OwnedObjectPath,
         enable: bool,
-    ) -> anyhow::Result<Vec<KnownConnection>> {
+    ) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         if enable {
             debug!("Activating VPN: {connection:?}");
             self.activate_connection(
@@ -176,7 +176,7 @@ impl super::NetworkBackend for NetworkDbus<'_> {
         Ok(known_connections)
     }
 
-    async fn known_connections(&self) -> anyhow::Result<Vec<KnownConnection>> {
+    async fn known_connections(&self) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         let wireless_access_points = self.wireless_access_points().await?;
         self.known_connections_internal(&wireless_access_points)
             .await
@@ -192,13 +192,13 @@ impl<'a> Deref for NetworkDbus<'a> {
 }
 
 impl NetworkDbus<'_> {
-    pub async fn new(conn: &zbus::Connection) -> anyhow::Result<Self> {
+    pub async fn new(conn: &zbus::Connection) -> color_eyre::eyre::Result<Self> {
         let nm = NetworkManagerProxy::new(conn).await?;
 
         Ok(Self(nm))
     }
 
-    pub async fn scan_nearby_wifi_with_devices(&self) -> anyhow::Result<Vec<OwnedObjectPath>> {
+    pub async fn scan_nearby_wifi_with_devices(&self) -> color_eyre::eyre::Result<Vec<OwnedObjectPath>> {
         let device_paths = self.wireless_devices().await?;
         let mut requested_devices = Vec::with_capacity(device_paths.len());
 
@@ -220,7 +220,7 @@ impl NetworkDbus<'_> {
 
     pub async fn subscribe_events(
         &self,
-    ) -> anyhow::Result<impl Stream<Item = super::NetworkEvent>> {
+    ) -> color_eyre::eyre::Result<impl Stream<Item = super::NetworkEvent>> {
         let nm = self;
         let conn = self.0.inner().connection();
         let settings = NetworkSettingsDbus::new(conn).await?;
@@ -472,7 +472,7 @@ impl NetworkDbus<'_> {
         self.0.connectivity().await.map(ConnectivityState::from)
     }
 
-    pub async fn wifi_device_present(&self) -> anyhow::Result<bool> {
+    pub async fn wifi_device_present(&self) -> color_eyre::eyre::Result<bool> {
         let devices = self.devices().await?;
         for d in devices {
             let device = DeviceProxy::builder(self.0.inner().connection())
@@ -491,13 +491,13 @@ impl NetworkDbus<'_> {
         Ok(false)
     }
 
-    pub async fn active_connections(&self) -> anyhow::Result<Vec<OwnedObjectPath>> {
+    pub async fn active_connections(&self) -> color_eyre::eyre::Result<Vec<OwnedObjectPath>> {
         let connections = self.0.active_connections().await?;
 
         Ok(connections)
     }
 
-    pub async fn active_connections_info(&self) -> anyhow::Result<Vec<ActiveConnectionInfo>> {
+    pub async fn active_connections_info(&self) -> color_eyre::eyre::Result<Vec<ActiveConnectionInfo>> {
         let active_connections = self.active_connections().await?;
         let mut ac_proxies: Vec<ActiveConnectionProxy> =
             Vec::with_capacity(active_connections.len());
@@ -591,7 +591,7 @@ impl NetworkDbus<'_> {
     pub async fn known_connections_internal(
         &self,
         wireless_access_points: &[AccessPoint],
-    ) -> anyhow::Result<Vec<KnownConnection>> {
+    ) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         let settings = NetworkSettingsDbus::new(self.0.inner().connection()).await?;
 
         let known_connections = settings.know_connections().await?;
@@ -635,7 +635,7 @@ impl NetworkDbus<'_> {
         Ok(known_connections)
     }
 
-    pub async fn wireless_devices(&self) -> anyhow::Result<Vec<OwnedObjectPath>> {
+    pub async fn wireless_devices(&self) -> color_eyre::eyre::Result<Vec<OwnedObjectPath>> {
         let devices = self.devices().await?;
         let mut wireless_devices = Vec::new();
         for d in devices {
@@ -655,7 +655,7 @@ impl NetworkDbus<'_> {
         Ok(wireless_devices)
     }
 
-    pub async fn wireless_access_points(&self) -> anyhow::Result<Vec<AccessPoint>> {
+    pub async fn wireless_access_points(&self) -> color_eyre::eyre::Result<Vec<AccessPoint>> {
         let wireless_devices = self.wireless_devices().await?;
         let wireless_access_point_futures: Vec<_> = wireless_devices
             .into_iter()
@@ -735,7 +735,7 @@ impl NetworkDbus<'_> {
 
         let mut wireless_access_points = Vec::with_capacity(wireless_access_point_futures.len());
         for f in wireless_access_point_futures {
-            let mut access_points: anyhow::Result<Vec<AccessPoint>> = f.await;
+            let mut access_points: color_eyre::eyre::Result<Vec<AccessPoint>> = f.await;
             if let Ok(access_points) = &mut access_points {
                 wireless_access_points.append(access_points);
             }
@@ -779,17 +779,17 @@ impl<'a> Deref for NetworkSettingsDbus<'a> {
 }
 
 impl NetworkSettingsDbus<'_> {
-    pub async fn new(conn: &zbus::Connection) -> anyhow::Result<Self> {
+    pub async fn new(conn: &zbus::Connection) -> color_eyre::eyre::Result<Self> {
         let settings = SettingsProxy::new(conn).await?;
 
         Ok(Self(settings))
     }
 
-    pub async fn know_connections(&self) -> anyhow::Result<Vec<OwnedObjectPath>> {
+    pub async fn know_connections(&self) -> color_eyre::eyre::Result<Vec<OwnedObjectPath>> {
         Ok(self.list_connections().await?)
     }
 
-    pub async fn find_connection(&self, name: &str) -> anyhow::Result<Option<OwnedObjectPath>> {
+    pub async fn find_connection(&self, name: &str) -> color_eyre::eyre::Result<Option<OwnedObjectPath>> {
         let connections = self.list_connections().await?;
 
         for connection in connections {

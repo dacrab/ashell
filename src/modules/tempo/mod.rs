@@ -11,7 +11,7 @@ use iced::{
     stream::channel,
     widget::{container, text},
 };
-use log::{debug, warn};
+use tracing::{debug, warn};
 
 use self::weather::{Location, WeatherData, fetch_location, fetch_weather_data};
 use crate::{

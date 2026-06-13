@@ -26,7 +26,7 @@ ashell/
 src/
 ├── main.rs                  # Entry point: logging, CLI args, iced daemon launch
 ├── app.rs                   # App struct, Message enum, update/view/subscription
-├── config.rs                # TOML config parsing, defaults, hot-reload via inotify
+├── config.rs                # TOML config parsing, defaults, hot-reload via notify
 ├── outputs.rs               # Multi-monitor management, layer surface creation
 ├── theme.rs                 # Theme system: colors, spacing, fonts, bar styles
 ├── menu.rs                  # Menu lifecycle: open/toggle/close, layer switching

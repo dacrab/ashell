@@ -1,4 +1,4 @@
-use log::error;
+use tracing::error;
 use tokio::process::Command;
 
 fn run_command(cmd: String, context: &'static str) {

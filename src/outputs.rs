@@ -3,7 +3,7 @@ use iced::{
     Task, destroy_layer_surface, new_layer_surface, set_anchor, set_exclusive_zone,
     set_input_region, set_keyboard_interactivity, set_size,
 };
-use log::debug;
+use tracing::debug;
 
 use crate::{
     HEIGHT,

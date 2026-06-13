@@ -74,7 +74,7 @@ pub fn new(config: MyModuleConfig) -> Self { /* ... */ }
 Use the `log` crate macros:
 
 ```rust
-use log::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 debug!("Detailed debugging info");
 info!("Notable events");

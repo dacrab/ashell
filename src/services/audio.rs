@@ -24,7 +24,7 @@ use libpulse_binding::{
     proplist::{Proplist, properties::APPLICATION_NAME},
     volume::{ChannelVolumes, Volume},
 };
-use log::{debug, error, trace, warn};
+use tracing::{debug, error, trace, warn};
 use std::{
     any::TypeId,
     cell::RefCell,
@@ -184,7 +184,7 @@ struct PulseAudioServerHandle {
 }
 
 impl AudioService {
-    async fn init_service() -> anyhow::Result<PulseAudioServerHandle> {
+    async fn init_service() -> color_eyre::eyre::Result<PulseAudioServerHandle> {
         PulseAudioServer::start().await
     }
 
@@ -467,19 +467,19 @@ struct PulseAudioServer {
 }
 
 impl PulseAudioServer {
-    fn new() -> anyhow::Result<Self> {
+    fn new() -> color_eyre::eyre::Result<Self> {
         let name = format!("{:?}", TypeId::of::<Self>());
         let mut proplist = Proplist::new()
-            .ok_or_else(|| anyhow::anyhow!("Failed to create PulseAudio property list"))?;
+            .ok_or_else(|| eyre::eyre!("Failed to create PulseAudio property list"))?;
         proplist
             .set_str(APPLICATION_NAME, name.as_str())
-            .map_err(|_| anyhow::anyhow!("Failed to set application name"))?;
+            .map_err(|_| eyre::eyre!("Failed to set application name"))?;
 
         let mut mainloop = Mainloop::new()
-            .ok_or_else(|| anyhow::anyhow!("Failed to create Pulse audio main loop"))?;
+            .ok_or_else(|| eyre::eyre!("Failed to create Pulse audio main loop"))?;
 
         let mut context = Context::new_with_proplist(&mainloop, name.as_str(), &proplist)
-            .ok_or_else(|| anyhow::anyhow!("Failed to create Pulse audio context"))?;
+            .ok_or_else(|| eyre::eyre!("Failed to create Pulse audio context"))?;
 
         context.connect(None, FlagSet::NOFLAGS, None)?;
 
@@ -487,7 +487,7 @@ impl PulseAudioServer {
         loop {
             match mainloop.iterate(true) {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
-                    return Err(anyhow::anyhow!("PulseAudio: iterate state was not success"));
+                    return Err(eyre::eyre!("PulseAudio: iterate state was not success"));
                 }
                 IterateResult::Success(_) => {
                     if context.get_state() == context::State::Ready {
@@ -506,14 +506,14 @@ impl PulseAudioServer {
         })
     }
 
-    async fn start() -> anyhow::Result<PulseAudioServerHandle> {
+    async fn start() -> color_eyre::eyre::Result<PulseAudioServerHandle> {
         let (from_server_tx, from_server_rx) = tokio::sync::mpsc::unbounded_channel();
         let (to_server_tx, to_server_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let (init_tx, mut init_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let (wake_read, wake) =
-            WakePipe::new().map_err(|e| anyhow::anyhow!("failed to create wake pipe: {e}"))?;
+            WakePipe::new().map_err(|e| eyre::eyre!("failed to create wake pipe: {e}"))?;
 
         // Single thread for both listening and commanding — avoids PulseAudio
         // mainloop assertion failures from concurrent connections.
@@ -682,16 +682,16 @@ impl PulseAudioServer {
                 sender: to_server_tx,
                 wake,
             }),
-            _ => Err(anyhow::anyhow!("Failed to start PulseAudio thread")),
+            _ => Err(eyre::eyre!("Failed to start PulseAudio thread")),
         }
     }
 
-    fn wait_for_response<T: ?Sized>(&mut self, operation: Operation<T>) -> anyhow::Result<()> {
+    fn wait_for_response<T: ?Sized>(&mut self, operation: Operation<T>) -> color_eyre::eyre::Result<()> {
         loop {
             match self.mainloop.iterate(true) {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
                     error!("PulseAudio: iterate state was not success");
-                    return Err(anyhow::anyhow!("PulseAudio: iterate state was not success"));
+                    return Err(eyre::eyre!("PulseAudio: iterate state was not success"));
                 }
                 IterateResult::Success(_) => {
                     if operation.get_state() == operation::State::Done {

@@ -15,7 +15,7 @@ use iced::{
     },
     stream::channel,
 };
-use log::{error, warn};
+use tracing::{error, warn};
 use serde::Deserialize;
 use std::{any::TypeId, fmt, time::Duration};
 use zbus::zvariant::ObjectPath;
@@ -316,7 +316,7 @@ impl ReadOnlyService for UPowerService {
 impl UPowerService {
     async fn initialize_data(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<(
+    ) -> color_eyre::eyre::Result<(
         Option<(BatteryData, Vec<ObjectPath<'static>>)>,
         Option<ChargeLimit>,
         Vec<Peripheral>,
@@ -360,7 +360,7 @@ impl UPowerService {
 
     async fn initialize_power_profile_data(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<PowerProfile> {
+    ) -> color_eyre::eyre::Result<PowerProfile> {
         let powerprofiles = PowerProfilesProxy::new(conn).await?;
 
         let profile = powerprofiles
@@ -373,7 +373,7 @@ impl UPowerService {
 
     async fn initialize_system_battery_data(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<Option<(BatteryData, SystemBattery)>> {
+    ) -> color_eyre::eyre::Result<Option<(BatteryData, SystemBattery)>> {
         let upower = UPowerDbus::new(conn).await?;
         let battery = upower.get_system_batteries().await?;
 
@@ -414,7 +414,7 @@ impl UPowerService {
 
     async fn initialize_peripheral_data(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<Vec<Peripheral>> {
+    ) -> color_eyre::eyre::Result<Vec<Peripheral>> {
         let upower = UPowerDbus::new(conn).await?;
         let devices = upower.get_peripheral_batteries().await?;
 
@@ -494,7 +494,7 @@ impl UPowerService {
 
     async fn initialize_charge_limit_data(
         conn: &zbus::Connection,
-    ) -> anyhow::Result<Option<ChargeLimit>> {
+    ) -> color_eyre::eyre::Result<Option<ChargeLimit>> {
         let upower = UPowerDbus::new(conn).await?;
         let Some(battery) = upower.get_system_batteries().await? else {
             return Ok(None);
@@ -507,7 +507,7 @@ impl UPowerService {
         conn: &zbus::Connection,
         system_battery_devices: Option<&Vec<ObjectPath<'static>>>,
         peripheral_paths: &[ObjectPath<'static>],
-    ) -> anyhow::Result<impl Stream<Item = UPowerEvent> + use<>> {
+    ) -> color_eyre::eyre::Result<impl Stream<Item = UPowerEvent> + use<>> {
         let system_battery_event = if let Some(battery_devices) = system_battery_devices {
             let upower = UPowerDbus::new(conn).await?;
 

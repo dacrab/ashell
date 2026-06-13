@@ -63,11 +63,11 @@ Groups are rendered together in a single container, which is especially visible 
 
 ## Hot-Reload
 
-Config changes are detected via [inotify](https://docs.rs/inotify) file watching:
+Config changes are detected via [notify](https://docs.rs/notify) file watching:
 
-1. The `config::subscription()` function watches the config file's **parent directory** for `CREATE`, `MODIFY`, `DELETE`, and `MOVE` events.
-2. Events are batched using `ready_chunks(10)` to handle editors that perform atomic saves (write to temp file, then rename).
-3. `DELETE` events include a 500ms delay before re-reading, to handle atomic save patterns where the file is briefly absent.
+1. The `config::subscription()` function watches the config file's **parent directory** for events matching the file name.
+2. A `tokio::sync::mpsc::unbounded_channel` bridges the notify callback (which runs on a dedicated thread) into the iced async event stream.
+3. `Remove` events include a 500ms delay before re-reading, to handle atomic save patterns where the file is briefly absent.
 4. On change, the new config is parsed and sent as `Message::ConfigChanged(Box<Config>)`.
 
 The subscription uses `TypeId::of::<Config>()` as its ID to ensure only one watcher runs.

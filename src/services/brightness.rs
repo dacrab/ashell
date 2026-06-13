@@ -8,7 +8,7 @@ use iced::{
     futures::{StreamExt, channel::mpsc::Sender, stream::pending},
     stream::channel,
 };
-use log::{debug, error, info, warn};
+use tracing::{debug, error, info, warn};
 use std::{
     any::TypeId,
     fs,
@@ -51,20 +51,20 @@ impl DerefMut for BrightnessService {
 }
 
 impl BrightnessService {
-    async fn get_max_brightness(device_path: &Path) -> anyhow::Result<u32> {
+    async fn get_max_brightness(device_path: &Path) -> color_eyre::eyre::Result<u32> {
         let max_brightness = fs::read_to_string(device_path.join("max_brightness"))?;
         let max_brightness = max_brightness.trim().parse::<u32>()?;
 
         Ok(max_brightness)
     }
 
-    async fn get_brightness(device_path: &Path) -> anyhow::Result<u32> {
+    async fn get_brightness(device_path: &Path) -> color_eyre::eyre::Result<u32> {
         let brightness = fs::read_to_string(device_path.join("brightness"))?;
         let brightness = brightness.trim().parse::<u32>()?;
         Ok(brightness)
     }
 
-    async fn initialize_data(device_path: &Path) -> anyhow::Result<BrightnessData> {
+    async fn initialize_data(device_path: &Path) -> color_eyre::eyre::Result<BrightnessData> {
         let max_brightness = Self::get_max_brightness(device_path).await?;
         let actual_brightness = Self::get_brightness(device_path).await?;
         Ok(BrightnessData {
@@ -76,14 +76,14 @@ impl BrightnessService {
 
     pub fn sync_brightness(&mut self) {
         if let Ok(value) = fs::read_to_string(self.data.device_path.join("brightness"))
-            .map_err(anyhow::Error::from)
+            .map_err(color_eyre::eyre::Error::from)
             .and_then(|s| Ok(s.trim().parse::<u32>()?))
         {
             self.data.current.receive(value);
         }
     }
 
-    async fn init_service() -> anyhow::Result<(zbus::Connection, PathBuf)> {
+    async fn init_service() -> color_eyre::eyre::Result<(zbus::Connection, PathBuf)> {
         let backlight_devices = Self::backlight_enumerate()?;
 
         match backlight_devices
@@ -99,12 +99,12 @@ impl BrightnessService {
             }
             _ => {
                 warn!("No backlight devices found");
-                Err(anyhow::anyhow!("No backlight devices found"))
+                Err(eyre::eyre!("No backlight devices found"))
             }
         }
     }
 
-    pub async fn backlight_monitor_listener() -> anyhow::Result<AsyncFd<udev::MonitorSocket>> {
+    pub async fn backlight_monitor_listener() -> color_eyre::eyre::Result<AsyncFd<udev::MonitorSocket>> {
         let socket = udev::MonitorBuilder::new()?
             .match_subsystem("backlight")?
             .listen()?;
@@ -115,7 +115,7 @@ impl BrightnessService {
         )?)
     }
 
-    fn backlight_enumerate() -> anyhow::Result<Vec<udev::Device>> {
+    fn backlight_enumerate() -> color_eyre::eyre::Result<Vec<udev::Device>> {
         let mut enumerator = udev::Enumerator::new()?;
         enumerator.match_subsystem("backlight")?;
 
@@ -249,7 +249,7 @@ impl BrightnessService {
         conn: &zbus::Connection,
         device_path: &Path,
         value: u32,
-    ) -> anyhow::Result<()> {
+    ) -> color_eyre::eyre::Result<()> {
         let brightness_ctrl = BrightnessCtrlProxy::new(conn).await?;
         let device_name = device_path
             .iter()

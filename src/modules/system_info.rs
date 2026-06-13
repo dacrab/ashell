@@ -17,7 +17,7 @@ use iced::{
     widget::{Column, Row, column, container, row, text},
 };
 use itertools::Itertools;
-use log::{info, warn};
+use tracing::{info, warn};
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 

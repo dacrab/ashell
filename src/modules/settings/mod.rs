@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use iced::futures::future::join_all;
-use log::{debug, error};
+use tracing::{debug, error};
 use tokio::process::Command;
 use tokio::time::timeout;
 

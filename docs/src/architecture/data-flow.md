@@ -132,7 +132,7 @@ ashell subscribes to many event sources:
 | Compositor (Hyprland/Niri) | IPC socket | Workspace changes, window focus, keyboard layout |
 | PulseAudio | libpulse mainloop on dedicated thread | Volume changes, device hotplug |
 | D-Bus (BlueZ, NM, UPower, etc.) | zbus signal watchers | Device state changes |
-| Config file | inotify | `ConfigChanged` |
+| Config file | notify | `ConfigChanged` |
 | System signals | signal-hook | `SIGUSR1` → `ToggleVisibility` |
 | Timers | iced `time::every` | Periodic updates (clock, system info) |
 | Wayland | Layer shell events | Output add/remove |

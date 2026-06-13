@@ -15,7 +15,7 @@ pub struct BluetoothDbus<'a> {
 }
 
 impl BluetoothDbus<'_> {
-    pub async fn new(conn: &zbus::Connection) -> anyhow::Result<Self> {
+    pub async fn new(conn: &zbus::Connection) -> color_eyre::eyre::Result<Self> {
         let bluez = BluezObjectManagerProxy::new(conn).await?;
         let adapter = bluez
             .get_managed_objects()
@@ -81,7 +81,7 @@ impl BluetoothDbus<'_> {
         }
     }
 
-    pub async fn devices(&self) -> anyhow::Result<Vec<BluetoothDevice>> {
+    pub async fn devices(&self) -> color_eyre::eyre::Result<Vec<BluetoothDevice>> {
         let devices_proxy = self
             .bluez
             .get_managed_objects()

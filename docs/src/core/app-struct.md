@@ -8,7 +8,6 @@ The `App` struct in `src/app.rs` is the central state container for the entire a
 pub struct App {
     config_path: PathBuf,               // Path to the TOML config file
     pub theme: AshellTheme,             // Current theme (colors, spacing, fonts)
-    logger: LoggerHandle,               // flexi_logger handle for runtime log level changes
     pub general_config: GeneralConfig,  // Extracted config subset (outputs, modules, layer)
     pub outputs: Outputs,               // Multi-monitor surface management
 
@@ -50,7 +49,7 @@ pub struct GeneralConfig {
 
 ```rust
 pub fn new(
-    (logger, config, config_path): (LoggerHandle, Config, PathBuf),
+    (config, config_path): (Config, PathBuf),
 ) -> impl FnOnce() -> (Self, Task<Message>) {
     move || {
         let (outputs, task) = Outputs::new(/* style, position, layer, scale_factor */);
@@ -79,8 +78,10 @@ fn refesh_config(&mut self, config: Box<Config>) {
     // Update theme
     self.theme = AshellTheme::new(config.position, &config.appearance);
 
-    // Update logger level
-    self.logger.set_new_spec(get_log_spec(&config.log_level));
+    // Update log level via tracing reload handle
+    if let Some(setter) = crate::SET_LOG_LEVEL.get() {
+        setter(&config.log_level);
+    }
 
     // Sync outputs (may create/destroy surfaces)
     let task = self.outputs.sync(/* ... */);

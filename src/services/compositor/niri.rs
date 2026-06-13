@@ -3,7 +3,7 @@ use super::types::{
     CompositorService, CompositorState, CompositorWorkspace,
 };
 use crate::services::ServiceEvent;
-use anyhow::{Context, Result, anyhow};
+use color_eyre::eyre::{Context, Result, eyre};
 use itertools::Itertools;
 use niri_ipc::{
     Action, Event, Reply, Request, WorkspaceReferenceArg,
@@ -25,14 +25,14 @@ pub async fn execute_command(cmd: CompositorCommand) -> Result<()> {
                 reference: WorkspaceReferenceArg::Id(id),
             },
             Err(_) => {
-                return Err(anyhow!(
+                return Err(eyre!(
                     "Workspace ID {} is out of range for Niri backend",
                     id
                 ));
             }
         },
         CompositorCommand::ToggleSpecialWorkspace(_) => {
-            return Err(anyhow!("Special workspaces not supported in Niri backend"));
+            return Err(eyre!("Special workspaces not supported in Niri backend"));
         }
         CompositorCommand::NextLayout => Action::SwitchLayout {
             layout: niri_ipc::LayoutSwitchTarget::Next,
@@ -43,7 +43,7 @@ pub async fn execute_command(cmd: CompositorCommand) -> Result<()> {
                     command: vec![args],
                 }
             } else {
-                return Err(anyhow!("Unknown custom dispatch: {}", action));
+                return Err(eyre!("Unknown custom dispatch: {}", action));
             }
         }
     };
@@ -76,7 +76,7 @@ pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>
 
     let reply: Reply = serde_json::from_str(&line).context("Failed to parse handshake")?;
     if let Err(e) = reply {
-        return Err(anyhow!("Niri refused EventStream: {}", e));
+        return Err(eyre!("Niri refused EventStream: {}", e));
     }
 
     // 5. Shutdown write half
@@ -101,7 +101,7 @@ pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>
                 // - existing fields and enum variants should not be renamed
                 // - non-optional existing fields should not be removed
                 // However, new fields and enum variants will be added, so you should handle unknown fields or variants gracefully where reasonable.
-                log::debug!(
+                tracing::debug!(
                     "Failed to parse Niri event (this is caused by niri's IPC not being version bound) -> {:?}",
                     e
                 );
@@ -127,7 +127,7 @@ pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>
 async fn connect() -> Result<UnixStream> {
     let socket_path = env::var_os("NIRI_SOCKET")
         .or_else(|| env::var_os("NIRI_SOCKET_PATH"))
-        .ok_or_else(|| anyhow!("NIRI_SOCKET or NIRI_SOCKET_PATH environment variable not set"))?;
+        .ok_or_else(|| eyre!("NIRI_SOCKET or NIRI_SOCKET_PATH environment variable not set"))?;
 
     let std_stream = StdUnixStream::connect(socket_path)?;
     std_stream.set_nonblocking(true)?;
@@ -145,7 +145,7 @@ async fn send_command_request(stream: &mut UnixStream, request: Request) -> Resu
     reader.read_line(&mut response_line).await?;
 
     let reply: Reply = serde_json::from_str(&response_line)?;
-    reply.map_err(|e| anyhow!("Niri error: {}", e)).map(|_| ())
+    reply.map_err(|e| eyre!("Niri error: {}", e)).map(|_| ())
 }
 
 fn map_state(niri: &EventStreamState) -> CompositorState {

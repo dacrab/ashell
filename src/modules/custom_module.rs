@@ -17,7 +17,7 @@ use iced::{
         container,
     },
 };
-use log::{error, info, warn};
+use tracing::{error, info, warn};
 use serde::Deserialize;
 use std::process::Stdio;
 use tokio::{

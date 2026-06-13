@@ -29,7 +29,7 @@ use iced::futures::future::join_all;
 use iced::futures::stream::select_all;
 use iced::futures::{Stream, StreamExt};
 
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use std::collections::HashMap;
 use std::ops::Deref;
 use tokio::process::Command;
@@ -93,7 +93,7 @@ impl<'a> Deref for IwdDbus<'a> {
 
 #[allow(unused_variables)]
 impl super::NetworkBackend for IwdDbus<'_> {
-    async fn initialize_data(&self) -> anyhow::Result<super::NetworkData> {
+    async fn initialize_data(&self) -> color_eyre::eyre::Result<super::NetworkData> {
         let nm = self;
 
         // airplane mode
@@ -143,7 +143,7 @@ impl super::NetworkBackend for IwdDbus<'_> {
     }
 
     /// List known (provisioned) SSIDs.
-    async fn known_connections(&self) -> anyhow::Result<Vec<KnownConnection>> {
+    async fn known_connections(&self) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         let nets = self.reachable_networks().await?;
         let mut networks = HashMap::<String, AccessPoint>::new();
         for (n, signal_strength) in nets {
@@ -219,7 +219,7 @@ impl super::NetworkBackend for IwdDbus<'_> {
             .collect())
     }
 
-    async fn scan_nearby_wifi(&self) -> anyhow::Result<()> {
+    async fn scan_nearby_wifi(&self) -> color_eyre::eyre::Result<()> {
         for station in self.stations().await? {
             if station.scanning().await? {
                 debug!("Already scanning");
@@ -230,7 +230,7 @@ impl super::NetworkBackend for IwdDbus<'_> {
         Ok(())
     }
 
-    async fn set_wifi_enabled(&self, enabled: bool) -> anyhow::Result<()> {
+    async fn set_wifi_enabled(&self, enabled: bool) -> color_eyre::eyre::Result<()> {
         let adapters = self.adapters().await?;
         for adapter in adapters {
             adapter.set_powered(enabled).await?;
@@ -242,7 +242,7 @@ impl super::NetworkBackend for IwdDbus<'_> {
         &self,
         ap: &AccessPoint,
         password: Option<String>,
-    ) -> anyhow::Result<()> {
+    ) -> color_eyre::eyre::Result<()> {
         // Get the agent manager
         let agent_manager = self.agent_manager().await?;
 
@@ -286,15 +286,15 @@ impl super::NetworkBackend for IwdDbus<'_> {
         &self,
         path: OwnedObjectPath,
         enable: bool,
-    ) -> anyhow::Result<Vec<KnownConnection>> {
+    ) -> color_eyre::eyre::Result<Vec<KnownConnection>> {
         // IWD doesn't natively support VPN management
         // This would need to be implemented with additional VPN management tools
-        Err(anyhow::anyhow!(
+        Err(eyre::eyre!(
             "VPN management not implemented for IWD backend"
         ))
     }
 
-    async fn set_airplane_mode(&self, airplane: bool) -> anyhow::Result<()> {
+    async fn set_airplane_mode(&self, airplane: bool) -> color_eyre::eyre::Result<()> {
         Command::new("/usr/sbin/rfkill")
             .arg(if airplane { "block" } else { "unblock" })
             .arg("bluetooth")
@@ -322,7 +322,7 @@ macro_rules! list_proxies {
                     );
                 }
             }
-            Ok::<_, anyhow::Error>(proxies)
+            Ok::<_, color_eyre::eyre::Error>(proxies)
         }
     };
 }
@@ -422,7 +422,7 @@ impl PWAgent {
 #[allow(dead_code, unused_variables)]
 impl IwdDbus<'_> {
     /// Connect to the system bus and the IWD service.
-    pub async fn new(conn: &zbus::Connection) -> anyhow::Result<Self> {
+    pub async fn new(conn: &zbus::Connection) -> color_eyre::eyre::Result<Self> {
         let manager = ObjectManagerProxy::builder(conn)
             .destination("net.connman.iwd")?
             .path("/")?
@@ -434,19 +434,19 @@ impl IwdDbus<'_> {
 
     // adapter <- device (station mode) <- station
 
-    pub async fn stations(&'_ self) -> anyhow::Result<Vec<StationProxy<'_>>> {
+    pub async fn stations(&'_ self) -> color_eyre::eyre::Result<Vec<StationProxy<'_>>> {
         list_proxies!(&self._inner, "net.connman.iwd.Station", StationProxy).await
     }
 
-    pub async fn adapters(&'_ self) -> anyhow::Result<Vec<AdapterProxy<'_>>> {
+    pub async fn adapters(&'_ self) -> color_eyre::eyre::Result<Vec<AdapterProxy<'_>>> {
         list_proxies!(&self._inner, "net.connman.iwd.Adapter", AdapterProxy).await
     }
 
-    pub async fn devices(&'_ self) -> anyhow::Result<Vec<DeviceProxy<'_>>> {
+    pub async fn devices(&'_ self) -> color_eyre::eyre::Result<Vec<DeviceProxy<'_>>> {
         list_proxies!(&self._inner, "net.connman.iwd.Device", DeviceProxy).await
     }
 
-    pub async fn agent_manager(&'_ self) -> anyhow::Result<AgentManagerProxy<'_>> {
+    pub async fn agent_manager(&'_ self) -> color_eyre::eyre::Result<AgentManagerProxy<'_>> {
         list_proxies!(
             &self._inner,
             "net.connman.iwd.AgentManager",
@@ -455,10 +455,10 @@ impl IwdDbus<'_> {
         .await?
         .first()
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("No AgentManagerProxy found"))
+        .ok_or_else(|| eyre::eyre!("No AgentManagerProxy found"))
     }
 
-    pub async fn known_networks_proxies(&'_ self) -> anyhow::Result<Vec<KnownNetworkProxy<'_>>> {
+    pub async fn known_networks_proxies(&'_ self) -> color_eyre::eyre::Result<Vec<KnownNetworkProxy<'_>>> {
         list_proxies!(
             &self._inner,
             "net.connman.iwd.KnownNetwork",
@@ -467,11 +467,11 @@ impl IwdDbus<'_> {
         .await
     }
 
-    pub async fn networks_proxies(&'_ self) -> anyhow::Result<Vec<NetworkProxy<'_>>> {
+    pub async fn networks_proxies(&'_ self) -> color_eyre::eyre::Result<Vec<NetworkProxy<'_>>> {
         list_proxies!(&self._inner, "net.connman.iwd.Network", NetworkProxy).await
     }
 
-    pub async fn access_points_proxies(&'_ self) -> anyhow::Result<Vec<AccessPointProxy<'_>>> {
+    pub async fn access_points_proxies(&'_ self) -> color_eyre::eyre::Result<Vec<AccessPointProxy<'_>>> {
         // Note: AccessPoint interface might not be directly on the root object manager.
         // It might be associated with a Device or Station. This function assumes they might appear.
         // If this doesn't work as expected, the logic might need refinement based on IWD's structure.
@@ -483,7 +483,7 @@ impl IwdDbus<'_> {
         .await
     }
 
-    pub async fn reachable_networks(&'_ self) -> anyhow::Result<Vec<(NetworkProxy<'_>, i16)>> {
+    pub async fn reachable_networks(&'_ self) -> color_eyre::eyre::Result<Vec<(NetworkProxy<'_>, i16)>> {
         let stations = self.stations().await?;
         let mut networks = Vec::new();
 
@@ -501,7 +501,7 @@ impl IwdDbus<'_> {
         Ok(networks)
     }
 
-    pub async fn subscribe_events(&self) -> anyhow::Result<impl Stream<Item = Vec<NetworkEvent>>> {
+    pub async fn subscribe_events(&self) -> color_eyre::eyre::Result<impl Stream<Item = Vec<NetworkEvent>>> {
         let _conn = self.inner().connection();
         let iwd = self;
 
@@ -764,7 +764,7 @@ impl IwdDbus<'_> {
     }
 
     /// Get the state of all station interfaces.
-    pub async fn connectivity(&self) -> anyhow::Result<Vec<String>> {
+    pub async fn connectivity(&self) -> color_eyre::eyre::Result<Vec<String>> {
         let mut states = Vec::new();
         for s in self.stations().await? {
             let state = s.state().await?;
@@ -774,7 +774,7 @@ impl IwdDbus<'_> {
     }
 
     /// Return true if any device in station mode is present.
-    pub async fn wifi_device_present(&self) -> anyhow::Result<bool> {
+    pub async fn wifi_device_present(&self) -> color_eyre::eyre::Result<bool> {
         let devices = self.wireless_devices().await?;
 
         for d in devices {
@@ -786,7 +786,7 @@ impl IwdDbus<'_> {
     }
 
     /// List all networks currently connected (Connected = true).
-    pub async fn active_connections(&'_ self) -> anyhow::Result<Vec<(NetworkProxy<'_>, i16)>> {
+    pub async fn active_connections(&'_ self) -> color_eyre::eyre::Result<Vec<(NetworkProxy<'_>, i16)>> {
         let mut networks = Vec::new();
         for (net, strength) in self.reachable_networks().await? {
             if net.connected().await? {
@@ -797,7 +797,7 @@ impl IwdDbus<'_> {
     }
 
     /// Detailed info on active connections.
-    pub async fn active_connections_info(&self) -> anyhow::Result<Vec<ActiveConnectionInfo>> {
+    pub async fn active_connections_info(&self) -> color_eyre::eyre::Result<Vec<ActiveConnectionInfo>> {
         // INFO: probably way cleaner with a custom dbus object - SignalLevelAgent
 
         let nets = self.active_connections().await?;
@@ -814,7 +814,7 @@ impl IwdDbus<'_> {
     }
 
     /// List all wireless (station-mode) devices.
-    pub async fn wireless_devices(&'_ self) -> anyhow::Result<Vec<DeviceProxy<'_>>> {
+    pub async fn wireless_devices(&'_ self) -> color_eyre::eyre::Result<Vec<DeviceProxy<'_>>> {
         let devices = self.devices().await?;
         let mut devs = Vec::new();
         for d in devices {
@@ -826,7 +826,7 @@ impl IwdDbus<'_> {
     }
 
     /// Scan and list available access points.
-    pub async fn wireless_access_points(&self) -> anyhow::Result<Vec<AccessPoint>> {
+    pub async fn wireless_access_points(&self) -> color_eyre::eyre::Result<Vec<AccessPoint>> {
         let mut aps = Vec::new();
         {
             let nets = self.reachable_networks().await?;
@@ -878,7 +878,7 @@ impl IwdDbus<'_> {
         Ok(aps)
     }
 
-    pub async fn wireless_enabled(&self) -> anyhow::Result<bool> {
+    pub async fn wireless_enabled(&self) -> color_eyre::eyre::Result<bool> {
         let devs = self.wireless_devices().await?;
         for d in devs {
             if d.powered().await? {

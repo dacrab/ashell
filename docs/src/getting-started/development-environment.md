@@ -62,11 +62,11 @@ The default config path is `~/.config/ashell/config.toml`.
 
 ## Logging
 
-ashell uses [flexi_logger](https://docs.rs/flexi_logger) and writes logs to `$XDG_RUNTIME_DIR/ashell/`.
+ashell uses [tracing](https://docs.rs/tracing) and writes logs to `$XDG_RUNTIME_DIR/ashell/`.
 
-- Log files rotate daily and are kept for 7 days.
-- In debug builds, logs are also printed to stdout.
-- The log level is controlled by the `log_level` field in the config file (default: `"warn"`).
+- Log files rotate daily and are kept for 7 days via `tracing-appender`.
+- In debug builds, `tracing-subscriber`'s `fmt` layer prints to stderr (WARN+).
+- The log level is controlled by the `log_level` field in the config file (default: `"warn"`), with `RUST_LOG` taking precedence.
 - The log level follows the [env_logger syntax](https://docs.rs/env_logger/latest/env_logger/#enabling-logging), e.g., `"debug"`, `"info"`, `"ashell=debug,iced=warn"`.
 
 To watch logs in real time:

@@ -1,5 +1,5 @@
 use iced::futures::StreamExt;
-use log::{info, warn};
+use tracing::{info, warn};
 use std::time::Duration;
 use zbus::{
     Connection, Result,
@@ -22,7 +22,7 @@ pub struct StatusNotifierWatcher {
 }
 
 impl StatusNotifierWatcher {
-    pub async fn start_server() -> anyhow::Result<Connection> {
+    pub async fn start_server() -> color_eyre::eyre::Result<Connection> {
         let connection = zbus::connection::Connection::session().await?;
         let watcher = StatusNotifierWatcher::default();
         connection.object_server().at(OBJECT_PATH, watcher).await?;
@@ -111,7 +111,7 @@ impl StatusNotifierWatcher {
     async fn discover_items(
         conn: &Connection,
         interface: &zbus::object_server::InterfaceRef<StatusNotifierWatcher>,
-    ) -> anyhow::Result<()> {
+    ) -> color_eyre::eyre::Result<()> {
         let dbus_proxy = DBusProxy::new(conn).await?;
         let names = dbus_proxy.list_names().await?;
 

@@ -18,7 +18,7 @@ use iced::{
     widget::{Space, button, column, container, image, row, scrollable, sensor, svg, text},
 };
 use itertools::Itertools;
-use log::error;
+use tracing::error;
 use std::{
     collections::{HashSet, VecDeque},
     time::Duration,

@@ -3,12 +3,10 @@ use crate::i18n::{UnitSystem, unit_system};
 use crate::services::upower::PeripheralDeviceKind;
 use crate::utils::{celsius_to_fahrenheit, send_or_log};
 use hex_color::HexColor;
-use iced::futures::StreamExt;
 use iced::{Color, Subscription, stream::channel, theme::palette};
-use inotify::EventMask;
-use inotify::Inotify;
-use inotify::WatchMask;
-use log::{debug, error, info, warn};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
+use tokio::sync::mpsc;
+use tracing::{debug, error, info, warn};
 use regex::Regex;
 use serde::{Deserialize, Deserializer, de::Visitor};
 use serde_with::DisplayFromStr;
@@ -1271,75 +1269,67 @@ fn read_config(path: &Path) -> Result<Config, Box<dyn Error + Send>> {
     }
 }
 
-enum Event {
-    Changed,
-    Removed,
-}
-
 pub fn subscription(path: &Path) -> Subscription<Message> {
     let path = path.to_path_buf();
 
     Subscription::run_with(path, |path| {
         let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
         channel(100, async move |mut output| {
-            match (path.parent(), path.file_name(), Inotify::init()) {
-                (Some(folder), Some(file_name), Ok(inotify)) => {
+            match (path.parent(), path.file_name()) {
+                (Some(folder), Some(file_name)) => {
                     debug!("Watching config file at {path:?}");
 
-                    let res = inotify.watches().add(
-                        folder,
-                        WatchMask::CREATE | WatchMask::DELETE | WatchMask::MOVE | WatchMask::MODIFY,
-                    );
+                    let (tx, mut rx) = mpsc::unbounded_channel();
 
-                    if let Err(e) = res {
+                    let mut watcher = match RecommendedWatcher::new(
+                        move |event: Result<notify::Event, notify::Error>| {
+                            let _ = tx.send(event);
+                        },
+                        notify::Config::default(),
+                    ) {
+                        Ok(w) => w,
+                        Err(e) => {
+                            error!("Failed to create file watcher: {e}");
+                            return;
+                        }
+                    };
+
+                    if let Err(e) = watcher.watch(folder, RecursiveMode::NonRecursive) {
                         error!("Failed to add watch for {folder:?}: {e}");
                         return;
                     }
 
-                    let buffer = [0; 1024];
-                    let stream = inotify.into_event_stream(buffer);
+                    let file_name = file_name.to_owned();
+                    debug!("Starting config file watch loop");
 
-                    if let Ok(stream) = stream {
-                        let mut stream = stream.ready_chunks(10);
+                    loop {
+                        match rx.recv().await {
+                            Some(Ok(event)) => {
+                                debug!("Received notify event: {event:?}");
 
-                        debug!("Starting config file watch loop");
+                                let matches = event
+                                    .paths
+                                    .iter()
+                                    .any(|p| p.file_name() == Some(&file_name));
 
-                        loop {
-                            let events = stream.next().await.unwrap_or(vec![]);
-
-                            debug!("Received inotify events: {events:?}");
-
-                            let mut file_event = None;
-
-                            for event in events {
-                                debug!("Event: {event:?}");
-                                match event {
-                                    Ok(inotify::Event {
-                                        name: Some(name),
-                                        mask: EventMask::DELETE | EventMask::MOVED_FROM,
-                                        ..
-                                    }) if file_name == name => {
-                                        debug!("File deleted or moved");
-                                        file_event = Some(Event::Removed);
-                                    }
-                                    Ok(inotify::Event {
-                                        name: Some(name),
-                                        mask:
-                                            EventMask::CREATE | EventMask::MODIFY | EventMask::MOVED_TO,
-                                        ..
-                                    }) if file_name == name => {
-                                        debug!("File created or moved");
-
-                                        file_event = Some(Event::Changed);
-                                    }
-                                    _ => {
-                                        debug!("Ignoring event");
-                                    }
+                                if !matches {
+                                    debug!("Ignoring event for other file");
+                                    continue;
                                 }
-                            }
 
-                            match file_event {
-                                Some(Event::Changed) => {
+                                if matches!(event.kind, EventKind::Remove(_)) {
+                                    debug!("File deleted or moved");
+                                    sleep(Duration::from_millis(500)).await;
+
+                                    if !path.exists() {
+                                        info!("Config file removed");
+                                        send_or_log(
+                                            &mut output,
+                                            Message::ConfigChanged(Box::default()),
+                                        )
+                                        .await;
+                                    }
+                                } else {
                                     info!("Reload config file");
 
                                     let path_clone = path.clone();
@@ -1355,38 +1345,24 @@ pub fn subscription(path: &Path) -> Subscription<Message> {
                                     )
                                     .await;
                                 }
-                                Some(Event::Removed) => {
-                                    // wait and double check if the file is really gone
-                                    sleep(Duration::from_millis(500)).await;
-
-                                    if !path.exists() {
-                                        info!("Config file removed");
-                                        send_or_log(
-                                            &mut output,
-                                            Message::ConfigChanged(Box::default()),
-                                        )
-                                        .await;
-                                    }
-                                }
-                                None => {
-                                    debug!("No relevant file event detected.");
-                                }
+                            }
+                            Some(Err(e)) => {
+                                error!("File watcher error: {e}");
+                            }
+                            None => {
+                                debug!("File watcher channel closed");
+                                break;
                             }
                         }
-                    } else {
-                        error!("Failed to create inotify event stream");
                     }
                 }
-                (None, _, _) => {
+                (None, _) => {
                     error!(
                         "Config file path does not have a parent directory, cannot watch for changes"
                     );
                 }
-                (_, None, _) => {
+                (_, None) => {
                     error!("Config file path does not have a file name, cannot watch for changes");
-                }
-                (_, _, Err(e)) => {
-                    error!("Failed to initialize inotify: {e}");
                 }
             }
         })

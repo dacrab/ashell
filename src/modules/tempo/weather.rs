@@ -310,7 +310,7 @@ impl Tempo {
 pub(super) async fn fetch_location(
     location: &WeatherLocation,
     lang: &str,
-) -> anyhow::Result<Location> {
+) -> color_eyre::eyre::Result<Location> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()?;
@@ -328,7 +328,7 @@ pub(super) async fn fetch_location(
 
             data.results
                 .first()
-                .ok_or_else(|| anyhow::anyhow!("No location found"))
+                .ok_or_else(|| eyre::eyre!("No location found"))
                 .cloned()
                 .map(|l| l.into())
         }
@@ -363,7 +363,7 @@ async fn try_reverse_geocode(
     lat: f32,
     lon: f32,
     lang: &str,
-) -> anyhow::Result<Option<(String, String)>> {
+) -> color_eyre::eyre::Result<Option<(String, String)>> {
     let url = format!(
         "https://nominatim.openstreetmap.org/reverse?format=json&lat={}&lon={}&accept-language={}",
         lat, lon, lang
@@ -489,7 +489,7 @@ pub(super) async fn fetch_weather_data(
     lat: f32,
     lon: f32,
     units: UnitSystem,
-) -> anyhow::Result<WeatherData> {
+) -> color_eyre::eyre::Result<WeatherData> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .build()?;

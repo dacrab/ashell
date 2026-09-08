@@ -12,7 +12,7 @@ help:
 	@echo "  start         Run the build"
 	@echo "  install       Install the build (supports DESTDIR and PREFIX)"
 	@echo "  fmt           Format the code"
-	@echo "  check         Format, check and lint the code"
+	@echo "  check         Verify formatting, lint and check the code"
 
 build:
 	cargo build --release
@@ -26,6 +26,6 @@ install: build
 fmt:
 	cargo fmt
 
-check: fmt
-	cargo check
-	cargo clippy -- -D warnings
+check:
+	cargo fmt --all -- --check
+	cargo clippy --all-features -- -D warnings

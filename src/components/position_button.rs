@@ -21,6 +21,7 @@ enum OnPress<'a, Message> {
 }
 
 enum OnHover<'a, Message> {
+    #[expect(dead_code, reason = "kept symmetric with on_hover_with_position")]
     Message(Message),
     MessageWithPosition(Box<dyn Fn(ButtonUIRef) -> Message + 'a>),
 }
@@ -41,7 +42,6 @@ where
     width: Length,
     height: Length,
     padding: Padding,
-    clip: bool,
     class: Theme::Class<'a>,
 }
 
@@ -66,7 +66,6 @@ where
             width: size.width.fluid(),
             height: size.height.fluid(),
             padding: DEFAULT_PADDING,
-            clip: false,
             class: Theme::default(),
         }
     }
@@ -133,11 +132,6 @@ where
         self
     }
 
-    pub fn on_hover(mut self, on_hover: Message) -> Self {
-        self.on_hover = Some(OnHover::Message(on_hover));
-        self
-    }
-
     pub fn on_hover_with_position(
         mut self,
         on_hover: impl Fn(ButtonUIRef) -> Message + 'a,
@@ -148,13 +142,6 @@ where
 
     pub fn on_unhover(mut self, on_unhover: Message) -> Self {
         self.on_unhover = Some(on_unhover);
-        self
-    }
-
-    /// Sets whether the contents of the [`Button`] should be clipped on
-    /// overflow.
-    pub fn clip(mut self, clip: bool) -> Self {
-        self.clip = clip;
         self
     }
 
@@ -548,11 +535,7 @@ where
             );
         }
 
-        let viewport = if self.clip {
-            bounds.intersection(viewport).unwrap_or(*viewport)
-        } else {
-            *viewport
-        };
+        let viewport = bounds.intersection(viewport).unwrap_or(*viewport);
 
         self.content.as_widget().draw(
             &tree.children[0],

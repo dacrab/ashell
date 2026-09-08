@@ -1,17 +1,9 @@
 pub mod access_point;
 pub mod adapter;
 pub mod agent_manager;
-pub mod basic_service_set;
-pub mod daemon;
 pub mod device;
-pub mod device_provisioning;
-pub mod known_network;
 pub mod network;
-pub mod service_manager;
-pub mod shared_code_device_provisioning;
-pub mod simple_configuration;
 pub mod station;
-pub mod station_diagnostic;
 
 use std::cmp::Reverse;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -37,11 +29,9 @@ use tokio::process::Command;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::zvariant::OwnedObjectPath;
 
-use access_point::AccessPointProxy;
 use adapter::AdapterProxy;
 use agent_manager::AgentManagerProxy;
 use device::DeviceProxy;
-use known_network::KnownNetworkProxy;
 use network::NetworkProxy;
 use station::StationProxy;
 
@@ -327,28 +317,6 @@ macro_rules! list_proxies {
     };
 }
 
-#[allow(unused)]
-enum IwdStationState {
-    Connected,
-    Disconnected,
-    Connecting,
-    Disconnecting,
-    Roaming,
-}
-
-impl From<String> for IwdStationState {
-    fn from(state: String) -> Self {
-        match state.as_str() {
-            "connected" => IwdStationState::Connected,
-            "disconnected" => IwdStationState::Disconnected,
-            "connecting" => IwdStationState::Connecting,
-            "disconnecting" => IwdStationState::Disconnecting,
-            "roaming" => IwdStationState::Roaming,
-            _ => IwdStationState::Disconnected,
-        }
-    }
-}
-
 static NEXT_SIGNAL_AGENT_ID: AtomicU64 = AtomicU64::new(0);
 
 struct SignalAgent {
@@ -493,31 +461,6 @@ impl IwdDbus<'_> {
         .ok_or_else(|| anyhow::anyhow!("No AgentManagerProxy found"))
     }
 
-    pub async fn known_networks_proxies(&'_ self) -> anyhow::Result<Vec<KnownNetworkProxy<'_>>> {
-        list_proxies!(
-            &self._inner,
-            "net.connman.iwd.KnownNetwork",
-            KnownNetworkProxy
-        )
-        .await
-    }
-
-    pub async fn networks_proxies(&'_ self) -> anyhow::Result<Vec<NetworkProxy<'_>>> {
-        list_proxies!(&self._inner, "net.connman.iwd.Network", NetworkProxy).await
-    }
-
-    pub async fn access_points_proxies(&'_ self) -> anyhow::Result<Vec<AccessPointProxy<'_>>> {
-        // Note: AccessPoint interface might not be directly on the root object manager.
-        // It might be associated with a Device or Station. This function assumes they might appear.
-        // If this doesn't work as expected, the logic might need refinement based on IWD's structure.
-        list_proxies!(
-            &self._inner,
-            "net.connman.iwd.AccessPoint",
-            AccessPointProxy
-        )
-        .await
-    }
-
     pub async fn reachable_networks(&'_ self) -> anyhow::Result<Vec<(NetworkProxy<'_>, i16)>> {
         let stations = self.stations().await?;
         let mut networks = Vec::new();
@@ -539,8 +482,6 @@ impl IwdDbus<'_> {
     pub async fn subscribe_events(&self) -> anyhow::Result<impl Stream<Item = Vec<NetworkEvent>>> {
         let _conn = self.inner().connection();
         let iwd = self;
-
-        //self.register_psk_agent().await?;
 
         // Subscribe before enumerating stations so station additions/removals cannot be missed.
         let mut station_interface_changes = select_all(vec![
@@ -748,40 +689,6 @@ impl IwdDbus<'_> {
         //configuration etc - these all are agents registered with IWD - and represent device
         //states
 
-        //// When devices list change I need to update the wireless device state changes
-        //let wireless_ac = nm.wireless_access_points().await?;
-
-        //let mut device_state_changes = Vec::with_capacity(wireless_ac.len());
-        //for ac in wireless_ac.iter() {
-        //    let dp = DeviceProxy::builder(conn)
-        //        .path(ac.device_path.clone())?
-        //        .build()
-        //        .await?;
-
-        //    device_state_changes.push(
-        //        dp.receive_state_changed()
-        //            .await
-        //            .filter_map(|val| async move {
-        //                let val = val.get().await;
-        //                let val = val.map(DeviceState::from).unwrap_or_default();
-
-        //                if val == DeviceState::NeedAuth {
-        //                    Some(val)
-        //                } else {
-        //                    None
-        //                }
-        //            })
-        //            .map(|_| {
-        //                let ssid = ac.ssid.clone();
-
-        //                debug!("Request password for ssid {}", ssid);
-        //                NetworkEvent::RequestPasswordForSSID(ssid)
-        //            }),
-        //    );
-        //}
-
-        //let access_points = select_all(ac_changes).boxed();
-
         let station_lifecycle = async move {
             let topology_changed =
                 station_topology_changed || station_interface_changes.next().await.is_some();
@@ -877,14 +784,14 @@ impl IwdDbus<'_> {
                 let device_path = net.device().await?.clone();
                 aps.push(AccessPointData {
                     ssid,
-                    state: DeviceState::Unknown, // TODO:
+                    state: DeviceState::Unknown,
                     // _s is between 0 and -10000
                     // should be between 0 and 100
                     strength: map_iwd_rssi_to_percent(signal_strength),
                     max_bitrate: 0,
                     frequency: 0,
                     public,
-                    working: false, // TODO:
+                    working: false,
                     path,
                     device_path,
                 });

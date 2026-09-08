@@ -31,15 +31,17 @@ jobs:
           mkdir -p ~/.config
           printf "%s" "$COPR_CONFIG" > ~/.config/copr
           chmod 600 ~/.config/copr
-      - name: Ensure cargo-rpm
-        run: cargo install cargo-rpm --locked || true
+      - name: Build release binary
+        run: cargo build --release
       - name: Prepare source archive
         run: |
           mkdir -p rpmbuild/SOURCES
           VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
-          mkdir -p /tmp/ashell-${VERSION}
-          cp -a . /tmp/ashell-${VERSION}/
-          tar -C /tmp --exclude=".git" -czf rpmbuild/SOURCES/ashell-${VERSION}.tar.gz ashell-${VERSION}
+          STAGE=/tmp/ashell-${VERSION}
+          rm -rf ${STAGE} && mkdir -p ${STAGE}/usr/bin
+          cp -a target/release/ashell ${STAGE}/usr/bin/
+          tar cf - --exclude=".git" --exclude="rpmbuild" --exclude="target" --exclude="website" --exclude="screenshots" . | tar xf - -C ${STAGE}
+          tar -C /tmp -czf rpmbuild/SOURCES/ashell-${VERSION}.tar.gz ashell-${VERSION}
       - name: Build SRPM
         run: |
           sed -i "s/@@VERSION@@/$(awk -F'\"' '/^version = /{print $2; exit}' Cargo.toml)/; s/@@RELEASE@@/1/" .rpm/ashell.spec

@@ -40,7 +40,6 @@ jobs:
           STAGE=/tmp/ashell-${VERSION}
           rm -rf ${STAGE} && mkdir -p ${STAGE}/usr/bin
           cp -a target/release/ashell ${STAGE}/usr/bin/
-          tar cf - --exclude=".git" --exclude="rpmbuild" --exclude="target" --exclude="website" --exclude="screenshots" . | tar xf - -C ${STAGE}
           tar -C /tmp -czf rpmbuild/SOURCES/ashell-${VERSION}.tar.gz ashell-${VERSION}
       - name: Build SRPM
         run: |

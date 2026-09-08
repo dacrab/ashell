@@ -57,9 +57,8 @@ pub enum IconPosition {
     After,
 }
 
-pub(crate) enum OnPress<'a, Message> {
+pub(crate) enum OnPress<Message> {
     Direct(Message),
-    Closure(Box<dyn Fn() -> Message + 'a>),
 }
 
 pub struct StyledButton<'a, Message> {
@@ -68,7 +67,7 @@ pub struct StyledButton<'a, Message> {
     kind: ButtonKind,
     hierarchy: ButtonHierarchy,
     size: ButtonSize,
-    on_press: Option<OnPress<'a, Message>>,
+    on_press: Option<OnPress<Message>>,
     width: Option<Length>,
     height: Option<Length>,
 }
@@ -96,11 +95,6 @@ impl<'a, Message: 'static + Clone> StyledButton<'a, Message> {
 
     pub fn on_press(mut self, on_press: Message) -> Self {
         self.on_press = Some(OnPress::Direct(on_press));
-        self
-    }
-
-    pub fn on_press_with(mut self, on_press: impl Fn() -> Message + 'a) -> Self {
-        self.on_press = Some(OnPress::Closure(Box::new(on_press)));
         self
     }
 
@@ -168,7 +162,6 @@ impl<'a, Message: 'static + Clone> From<StyledButton<'a, Message>> for Element<'
 
         let btn = match value.on_press {
             Some(OnPress::Direct(message)) => btn.on_press(message),
-            Some(OnPress::Closure(closure)) => btn.on_press_with(closure),
             None => btn,
         };
 

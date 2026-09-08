@@ -5,45 +5,72 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
+    paths:
+      - "src/**"
+      - "assets/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".rpm/**"
+      - ".github/workflows/copr-build.yml"
+
+concurrency:
+  group: copr-build
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   copr:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     container:
       image: fedora:44
     env:
       COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
     steps:
       - uses: actions/checkout@v7
-      - name: Install deps
+
+      - name: Install dependencies
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           dnf -y install git cargo rust rpm-build copr-cli gcc make pkgconf-pkg-config \
             pipewire-devel libinput-devel systemd-devel dbus-devel wayland-devel \
             libxkbcommon-devel mesa-libEGL-devel pango-devel cairo-devel glib2-devel \
             openssl-devel fontconfig-devel freetype-devel clang-devel llvm-devel \
             pulseaudio-libs-devel
           dnf -y clean all
+
       - name: Configure copr-cli
         if: env.COPR_CONFIG != ''
         run: |
           mkdir -p ~/.config
           printf "%s" "$COPR_CONFIG" > ~/.config/copr
           chmod 600 ~/.config/copr
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # save only on main so dispatch runs restore the shared cache
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Extract version
+        run: echo "VERSION=$(awk -F'\"' '/^version = /{print $2; exit}' Cargo.toml)" >> "$GITHUB_ENV"
+
       - name: Build release binary
         run: cargo build --release
+
       - name: Prepare source archive
         run: |
           mkdir -p rpmbuild/SOURCES
-          VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
           STAGE=/tmp/ashell-${VERSION}
           rm -rf ${STAGE} && mkdir -p ${STAGE}/usr/bin
           cp -a target/release/ashell ${STAGE}/usr/bin/
           tar -C /tmp -czf rpmbuild/SOURCES/ashell-${VERSION}.tar.gz ashell-${VERSION}
+
       - name: Build SRPM
         run: |
-          sed -i "s/@@VERSION@@/$(awk -F'\"' '/^version = /{print $2; exit}' Cargo.toml)/; s/@@RELEASE@@/1/" .rpm/ashell.spec
+          sed -i "s/@@VERSION@@/${VERSION}/; s/@@RELEASE@@/1/" .rpm/ashell.spec
           rpmbuild -bs \
             --define "_topdir $(pwd)/rpmbuild" \
             --define "_sourcedir $(pwd)/rpmbuild/SOURCES" \
@@ -52,9 +79,11 @@ jobs:
             .rpm/ashell.spec
           echo "path=$(ls -1 rpmbuild/SRPMS/*.src.rpm | head -n1)" >> "$GITHUB_OUTPUT"
         id: srpm
+
       - name: Trigger Copr build
         if: env.COPR_CONFIG != ''
         run: copr-cli build killcrb/ashell "${{ steps.srpm.outputs.path }}"
+
       - name: List builds
         if: env.COPR_CONFIG != ''
         run: copr-cli list-builds killcrb/ashell

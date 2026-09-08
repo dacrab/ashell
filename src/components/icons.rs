@@ -35,7 +35,6 @@ pub enum StaticIcon {
     Speaker2,
     Speaker3,
     SpeakerOverdrive,
-    Headphones0,
     Headphones1,
     Headset,
     Mic0,
@@ -151,7 +150,6 @@ impl StaticIcon {
             StaticIcon::Speaker2 => "\u{f0580}",
             StaticIcon::Speaker3 => "\u{f057e}",
             StaticIcon::SpeakerOverdrive => "\u{f075d}",
-            StaticIcon::Headphones0 => "\u{f07ce}",
             StaticIcon::Headphones1 => "\u{f02cb}",
             StaticIcon::Headset => "\u{f02ce}",
             StaticIcon::Mic0 => "\u{f036d}",
@@ -377,7 +375,7 @@ pub type StyleFn<'a, Theme> = Box<dyn for<'b> Fn(&'b Theme, Status) -> Style + '
 
 pub struct IconButton<'a, I: Icon, Message> {
     icon: I,
-    on_press: Option<OnPress<'a, Message>>,
+    on_press: Option<OnPress<Message>>,
     kind: ButtonKind,
     hierarchy: ButtonHierarchy,
     style_override: Option<StyleFn<'a, Theme>>,
@@ -388,16 +386,6 @@ pub struct IconButton<'a, I: Icon, Message> {
 impl<'a, I: Icon, Message> IconButton<'a, I, Message> {
     pub fn on_press(mut self, on_press: Message) -> Self {
         self.on_press = Some(OnPress::Direct(on_press));
-        self
-    }
-
-    pub fn on_press_with(mut self, on_press: impl Fn() -> Message + 'a) -> Self {
-        self.on_press = Some(OnPress::Closure(Box::new(on_press)));
-        self
-    }
-
-    pub fn on_press_maybe(mut self, on_press: Option<Message>) -> Self {
-        self.on_press = on_press.map(OnPress::Direct);
         self
     }
 
@@ -475,7 +463,6 @@ impl<'a, I: Icon, Message: 'static + Clone> From<IconButton<'a, I, Message>>
 
         let btn = match value.on_press {
             Some(OnPress::Direct(message)) => btn.on_press(message),
-            Some(OnPress::Closure(closure)) => btn.on_press_with(closure),
             None => btn,
         };
 

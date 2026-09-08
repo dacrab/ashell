@@ -11,11 +11,15 @@ on:
       - synchronize
       - ready_for_review
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   checks-build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 90
     permissions:
-      contents: write
       actions: write
 
     steps:

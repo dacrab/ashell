@@ -86,7 +86,6 @@ reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
 ] }
 url = "2.5.7"
-signal-hook = "0.4.3"
 signal-hook-tokio = { version = "0.4", features = ["futures-v0_3"] }
 libc = "0.2.182"
 # keep in sync with the fontdb version pulled transitively by iced_layershell
@@ -100,7 +99,6 @@ i18n-embed = { version = "0.16", default-features = false, features = [
   "rust-embed",
 ] }
 i18n-embed-fl = "0.10"
-rust-embed = "8"
 unic-langid = "0.9"
 
 [patch.crates-io]

@@ -106,7 +106,6 @@ assets/
 ├── SymbolsNerdFont-Regular.ttf       # Nerd Font (source, ~2.4 MB)
 ├── SymbolsNerdFontMono-Regular.ttf   # Nerd Font Mono (source, ~2.4 MB)
 ├── AshellCustomIcon-Regular.otf      # Custom ashell icons (~8 KB)
-├── battery/                           # Battery state SVG icons
 ├── weather_icon/                      # Weather condition icons
 └── ashell_custom_icon_project.gs2     # Glyphs Studio project file
 ```

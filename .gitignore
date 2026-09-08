@@ -5,13 +5,9 @@ vendor
 /result
 /deps-result
 
-# Local Copr build artifacts
-/copr_build_*/
-
 # Ignore cargo-rpm workspace except tracked spec
 /.rpm/*
 !.rpm/ashell.spec
-.github/workflows/target/rust-analyzer/flycheck0
 
 # Ignore direnv
 .direnv/
@@ -21,4 +17,3 @@ vendor
 
 # mdbook build output
 docs/book/
-

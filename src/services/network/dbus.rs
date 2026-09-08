@@ -1008,12 +1008,6 @@ pub trait Device {
     fn device_type(&self) -> Result<u32>;
 
     #[zbus(property)]
-    fn available_connections(&self) -> Result<Vec<OwnedObjectPath>>;
-
-    #[zbus(property)]
-    fn active_connection(&self) -> Result<OwnedObjectPath>;
-
-    #[zbus(property)]
     fn state(&self) -> Result<u32>;
 }
 
@@ -1033,7 +1027,7 @@ pub trait WirelessDevice {
     fn access_points(&self) -> Result<Vec<OwnedObjectPath>>;
 
     #[zbus(property)]
-    fn last_scan(&self) -> zbus::Result<i64>;
+    fn last_scan(&self) -> Result<i64>;
 
     fn request_scan(&self, options: HashMap<String, OwnedValue>) -> Result<()>;
 }
@@ -1066,17 +1060,10 @@ pub trait AccessPoint {
     interface = "org.freedesktop.NetworkManager.Settings"
 )]
 pub trait Settings {
-    fn add_connection(
-        &self,
-        connection: HashMap<String, HashMap<String, OwnedValue>>,
-    ) -> Result<OwnedObjectPath>;
-
     #[zbus(property)]
     fn connections(&self) -> Result<Vec<OwnedObjectPath>>;
 
-    fn load_connections(&self, filenames: &[&str]) -> Result<(bool, Vec<String>)>;
-
-    fn list_connections(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
+    fn list_connections(&self) -> Result<Vec<OwnedObjectPath>>;
 }
 
 #[proxy(

@@ -18,6 +18,4 @@ pub trait MprisPlayer {
     fn set_volume(&self, v: f64) -> Result<()>;
     #[zbus(property)]
     fn volume(&self) -> Result<f64>;
-    #[zbus(property)]
-    fn can_control(&self) -> Result<bool>;
 }

@@ -1,10 +1,15 @@
+//! Elm core: `App` aggregates every module's state; `update` routes each
+//! `Message` to its module and collects the returned `Task`s, `view` renders
+//! the surface matching one `SurfaceId`, `subscription` batches the config
+//! watcher, IPC socket, output events and all module subscriptions.
+
 use crate::{
-    HEIGHT,
+    HEIGHT, SOLID_BAR_INSET,
     components::{Centerbox, menu::MenuType},
     config::{self, BarSurface, Config, ModuleName, Modules, Surface, WorkspaceIndicatorFormat},
-    get_log_spec,
     i18n::{Localizer, init_localizer},
     ipc::IpcCommand,
+    log_spec_for,
     modules::{
         self,
         custom_module::Custom,
@@ -16,7 +21,7 @@ use crate::{
         settings::{self, Settings},
         system_info::SystemInfo,
         tempo::Tempo,
-        tray::TrayModule,
+        tray::Tray,
         updates::Updates,
         window_title::WindowTitle,
         workspaces::Workspaces,
@@ -37,7 +42,6 @@ use iced::{
 use log::{debug, info, warn};
 use std::{collections::HashMap, path::PathBuf};
 
-const OSD_WIDTH: u32 = 250;
 const OSD_HEIGHT: u32 = 64;
 
 fn resolve_localizer(config: &Config) -> Localizer {
@@ -63,7 +67,7 @@ pub struct App {
     pub system_info: SystemInfo,
     pub keyboard_layout: KeyboardLayout,
     pub keyboard_submap: KeyboardSubmap,
-    pub tray: TrayModule,
+    pub tray: Tray,
     pub tempo: Tempo,
     pub privacy: Privacy,
     pub settings: Settings,
@@ -133,7 +137,7 @@ impl App {
                     system_info: SystemInfo::new(config.system_info),
                     keyboard_layout: KeyboardLayout::new(config.keyboard_layout),
                     keyboard_submap: KeyboardSubmap::default(),
-                    tray: TrayModule::new(config.tray),
+                    tray: Tray::new(config.tray),
                     tempo: Tempo::new(config.tempo),
                     privacy: Privacy::default(),
                     settings: Settings::new(config.settings),
@@ -175,26 +179,33 @@ impl App {
             updates
         });
 
-        let workspaces_task = self
-            .workspaces
-            .update(modules::workspaces::Message::ConfigReloaded(
-                config.workspaces,
-            ))
-            .map(Message::Workspaces);
+        let mut tasks = vec![
+            self.workspaces
+                .update(modules::workspaces::Message::ConfigReloaded(
+                    config.workspaces,
+                ))
+                .map(Message::Workspaces),
+        ];
+
+        // Keyboard layout may produce a task on config reload; batch it like
+        // every other module instead of dropping it.
+        tasks.push(
+            self.keyboard_layout
+                .update(modules::keyboard_layout::Message::ConfigReloaded(
+                    config.keyboard_layout,
+                ))
+                .map(Message::KeyboardLayout),
+        );
 
         self.window_title
             .update(modules::window_title::Message::ConfigReloaded(
                 config.window_title,
             ));
 
-        self.system_info = SystemInfo::new(config.system_info);
+        self.tray
+            .update(modules::tray::Message::ConfigReloaded(config.tray));
 
-        let _ = self
-            .keyboard_layout
-            .update(modules::keyboard_layout::Message::ConfigReloaded(
-                config.keyboard_layout,
-            ))
-            .map(Message::KeyboardLayout);
+        self.system_info = SystemInfo::new(config.system_info);
 
         self.keyboard_submap = KeyboardSubmap::default();
         self.tempo
@@ -209,14 +220,17 @@ impl App {
             .set_animations_enabled(config.animations.enabled);
         self.notifications
             .set_animations_enabled(config.animations.enabled);
-        let _ = self
-            .notifications
-            .update(modules::notifications::Message::ConfigReloaded(
-                config.notifications,
-            ));
+        if let modules::notifications::Action::Task(task) =
+            self.notifications
+                .update(modules::notifications::Message::ConfigReloaded(
+                    config.notifications,
+                ))
+        {
+            tasks.push(task.map(Message::Notifications));
+        }
         self.osd.update(osd::Message::ConfigReloaded(config.osd));
 
-        workspaces_task
+        Task::batch(tasks)
     }
 
     pub fn theme(&self, id: SurfaceId) -> Theme {
@@ -241,8 +255,7 @@ impl App {
                     "Current outputs: {:?}, new outputs: {:?}",
                     self.general_config.outputs, config.outputs
                 );
-                let (bar_position, bar_layout, scale_factor) =
-                    use_theme(|t| (t.bar_position, t.bar_layout(), t.scale_factor));
+                let (bar_layout, bar_position, scale_factor) = use_theme(|t| t.bar_geometry());
                 let new_layout = BarLayout::from_appearance(&config.appearance.bar);
                 if self.general_config.outputs != config.outputs
                     || bar_position != config.position
@@ -261,7 +274,7 @@ impl App {
                 }
 
                 self.logger
-                    .set_new_spec(get_log_spec(&config.logging.level));
+                    .set_new_spec(log_spec_for(&config.logging.level));
                 tasks.push(self.refresh_config(config));
 
                 Task::batch(tasks)
@@ -374,9 +387,10 @@ impl App {
                     .outputs
                     .close_all_menu_if(MenuType::Tray(name), self.general_config.enable_esc_key),
             },
-            Message::Tempo(message) => match self.tempo.update(message) {
-                modules::tempo::Action::None => Task::none(),
-            },
+            Message::Tempo(message) => {
+                self.tempo.update(message);
+                Task::none()
+            }
             Message::Privacy(msg) => {
                 self.privacy.update(msg);
                 Task::none()
@@ -422,8 +436,7 @@ impl App {
                     let name = info.name.as_str();
                     let description = format!("{} {} {}", info.name, info.make, info.model);
 
-                    let (bar_layout, bar_position, scale_factor) =
-                        use_theme(|t| (t.bar_layout(), t.bar_position, t.scale_factor));
+                    let (bar_layout, bar_position, scale_factor) = use_theme(|t| t.bar_geometry());
                     let task = self.outputs.add(
                         bar_layout,
                         &self.general_config.outputs,
@@ -444,8 +457,7 @@ impl App {
                 }
                 OutputEvent::Removed(output_id) => {
                     info!("Output destroyed");
-                    let (bar_layout, bar_position, scale_factor) =
-                        use_theme(|t| (t.bar_layout(), t.bar_position, t.scale_factor));
+                    let (bar_layout, bar_position, scale_factor) = use_theme(|t| t.bar_geometry());
                     self.outputs.remove(
                         bar_layout,
                         bar_position,
@@ -476,8 +488,7 @@ impl App {
                 }
             }
             Message::ResumeFromSleep => {
-                let (bar_layout, bar_position, scale_factor) =
-                    use_theme(|t| (t.bar_layout(), t.bar_position, t.scale_factor));
+                let (bar_layout, bar_position, scale_factor) = use_theme(|t| t.bar_geometry());
                 self.outputs.sync(
                     bar_layout,
                     &self.general_config.outputs,
@@ -512,7 +523,6 @@ impl App {
             Message::IpcOsdCommand(cmd) => {
                 let mut tasks = vec![];
 
-                // Execute the action via Settings.
                 let action = match &cmd {
                     IpcCommand::VolumeUp { .. } => self.settings.volume_adjust(true),
                     IpcCommand::VolumeDown { .. } => self.settings.volume_adjust(false),
@@ -537,7 +547,6 @@ impl App {
                     tasks.push(task.map(Message::Settings));
                 }
 
-                // Show OSD overlay if enabled.
                 if self.osd.config().enabled && !cmd.no_osd() {
                     let osd_info = osd_info::osd_info_for(self, &cmd);
 
@@ -550,7 +559,8 @@ impl App {
                         })
                     {
                         tasks.push(timer.map(Message::Osd));
-                        tasks.push(self.outputs.show_osd_layer(OSD_WIDTH, OSD_HEIGHT));
+                        let width = crate::components::MenuSize::Small.size() as u32;
+                        tasks.push(self.outputs.show_osd_layer(width, OSD_HEIGHT));
                     }
                 }
 
@@ -563,8 +573,7 @@ impl App {
             Message::None => Task::none(),
             Message::ToggleVisibility => {
                 self.visible = !self.visible;
-                let (bar_layout, bar_position, scale_factor) =
-                    use_theme(|t| (t.bar_layout(), t.bar_position, t.scale_factor));
+                let (bar_layout, bar_position, scale_factor) = use_theme(|t| t.bar_geometry());
                 let zone = if self.visible {
                     Outputs::exclusive_zone(bar_layout, bar_position, scale_factor)
                 } else {
@@ -613,7 +622,7 @@ impl App {
                     .height(if bar_surface == BarSurface::Transparent {
                         HEIGHT
                     } else {
-                        HEIGHT - space.xs as f64
+                        HEIGHT - SOLID_BAR_INSET
                     } as f32)
                     .padding(if bar_surface == BarSurface::Transparent {
                         [space.xxs, space.xxs]
@@ -729,9 +738,15 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         Subscription::batch(vec![
-            Subscription::batch(self.modules_subscriptions(&self.general_config.modules.left)),
-            Subscription::batch(self.modules_subscriptions(&self.general_config.modules.center)),
-            Subscription::batch(self.modules_subscriptions(&self.general_config.modules.right)),
+            Subscription::batch(
+                [
+                    &self.general_config.modules.left,
+                    &self.general_config.modules.center,
+                    &self.general_config.modules.right,
+                ]
+                .into_iter()
+                .flat_map(|modules_def| self.modules_subscriptions(modules_def)),
+            ),
             config::subscription(&self.config_path),
             crate::services::logind::LogindService::subscribe().map(|event| match event {
                 crate::services::ServiceEvent::Update(_) => Message::ResumeFromSleep,

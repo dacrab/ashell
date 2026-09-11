@@ -165,15 +165,9 @@ impl Tempo {
 
                                 izip!(
                                     time.map(|(_, v)| v),
-                                    data.hourly.weather_code.iter().enumerate().filter_map(
-                                        |(i, v)| if i >= start_index { Some(v) } else { None }
-                                    ),
-                                    data.hourly.temperature_2m.iter().enumerate().filter_map(
-                                        |(i, v)| if i >= start_index { Some(v) } else { None }
-                                    ),
-                                    data.hourly.is_day.iter().enumerate().filter_map(|(i, v)| {
-                                        if i >= start_index { Some(v) } else { None }
-                                    }),
+                                    data.hourly.weather_code.iter().skip(start_index),
+                                    data.hourly.temperature_2m.iter().skip(start_index),
+                                    data.hourly.is_day.iter().skip(start_index),
                                 )
                                 .map(|(hour_time, weather_code, temp_value, is_day)| {
                                     let display_time = self.time_str(
@@ -387,7 +381,7 @@ pub async fn fetch_location(location: &WeatherLocation, lang: &str) -> anyhow::R
         WeatherLocation::Coordinates(lat, lon) => {
             let (city, region_name) = match try_reverse_geocode(&client, *lat, *lon, lang).await {
                 Ok(Some((city, region))) => (city, region),
-                _ => (format!("Lat: {}, Lon: {}", lat, lon), String::new()),
+                _ => (t!("tempo-coordinates", lat = lat, lon = lon), String::new()),
             };
 
             Ok(Location {

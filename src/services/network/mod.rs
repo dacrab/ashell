@@ -9,7 +9,7 @@ use iced::{
     stream::channel,
 };
 use iwd_dbus::IwdDbus;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::{any::TypeId, ops::Deref, time::Duration};
 use tokio::time::sleep;
 use zbus::zvariant::OwnedObjectPath;
@@ -23,11 +23,6 @@ pub trait NetworkBackend: Send + Sync {
     /// Initializes the backend and fetches the initial network data.
     async fn initialize_data(&self) -> anyhow::Result<NetworkData>;
 
-    // / Subscribes to network events from the backend.
-    // / Returns a stream of `NetworkEvent`s.
-    // NOTE: the backend implementation diverged and the lifetimes are unhappy
-    //async fn subscribe_events(&self) -> anyhow::Result<impl Stream<Item = NetworkEvent>>;
-
     /// Toggles the airplane mode.
     async fn set_airplane_mode(&self, enable: bool) -> anyhow::Result<()>;
 
@@ -38,7 +33,6 @@ pub trait NetworkBackend: Send + Sync {
     async fn set_wifi_enabled(&self, enable: bool) -> anyhow::Result<()>;
 
     /// Connects to a specific access point, potentially with a password.
-    /// Returns the updated list of known connections.
     async fn select_access_point(
         &self,
         ap: &AccessPointData,
@@ -77,7 +71,7 @@ pub enum NetworkEvent {
 
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {
-    ScanNearByWiFi,
+    ScanNearbyWiFi,
     ToggleWiFi,
     ToggleAirplaneMode,
     SelectAccessPoint((AccessPointData, Option<String>)),
@@ -98,20 +92,15 @@ pub struct AccessPointData {
 }
 
 impl AccessPointData {
-    /// Returns true if the first access point (by max_bitrate, frequency, strength) is better than the second.
+    /// Returns true if this access point is better than `other`
+    /// (by max_bitrate, frequency, strength).
     /// Comparison order: max_bitrate > frequency > strength (higher values are better)
     #[inline]
-    pub fn is_better(
-        max_bitrate1: u32,
-        frequency1: u32,
-        strength1: u8,
-        max_bitrate2: u32,
-        frequency2: u32,
-        strength2: u8,
-    ) -> bool {
-        max_bitrate1 > max_bitrate2
-            || (max_bitrate1 == max_bitrate2
-                && (frequency1 > frequency2 || (frequency1 == frequency2 && strength1 > strength2)))
+    pub fn is_better_than(&self, other: &Self) -> bool {
+        self.max_bitrate > other.max_bitrate
+            || (self.max_bitrate == other.max_bitrate
+                && (self.frequency > other.frequency
+                    || (self.frequency == other.frequency && self.strength > other.strength)))
     }
 }
 
@@ -606,7 +595,7 @@ impl Service for NetworkService {
                     |airplane_mode| ServiceEvent::Update(NetworkEvent::AirplaneMode(airplane_mode)),
                 )
             }
-            NetworkCommand::ScanNearByWiFi => match self.backend_choice {
+            NetworkCommand::ScanNearbyWiFi => match self.backend_choice {
                 BackendChoice::NetworkManager => {
                     let conn = self.conn.clone();
                     Task::perform(
@@ -616,14 +605,14 @@ impl Service for NetworkService {
                                     Ok(device_paths) => device_paths,
                                     Err(err) => {
                                         error!(
-                                            "ScanNearByWiFi command: NetworkManager scan request failed: {err}"
+                                            "ScanNearbyWiFi command: NetworkManager scan request failed: {err}"
                                         );
                                         Vec::new()
                                     }
                                 },
                                 Err(err) => {
                                     error!(
-                                        "ScanNearByWiFi command: Failed to create NetworkDbus: {err}"
+                                        "ScanNearbyWiFi command: Failed to create NetworkDbus: {err}"
                                     );
                                     Vec::new()
                                 }
@@ -660,9 +649,9 @@ impl Service for NetworkService {
             }
             NetworkCommand::SelectAccessPoint((access_point, password)) => Task::perform(
                 async move {
-                    bc.select_access_point(&access_point, password)
-                        .await
-                        .unwrap_or_default();
+                    if let Err(e) = bc.select_access_point(&access_point, password).await {
+                        warn!("Failed to select access point: {e:#}");
+                    }
                     bc.known_connections().await.unwrap_or_default()
                 },
                 |known_connections| {
@@ -684,7 +673,9 @@ impl Service for NetworkService {
                         } else {
                             (vpn.path, true)
                         };
-                        bc.set_vpn(object_path, new_state).await.unwrap_or_default();
+                        if let Err(e) = bc.set_vpn(object_path, new_state).await {
+                            warn!("Failed to toggle VPN: {e:#}");
+                        }
                         let res = bc.known_connections().await;
                         debug!("VPN toggled: {res:?}");
                         res.unwrap_or_default()

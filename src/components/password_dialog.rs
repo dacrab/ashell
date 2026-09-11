@@ -1,6 +1,6 @@
 use super::icons::{StaticIcon, icon, icon_button};
 use crate::{
-    components::{ButtonHierarchy, ButtonKind, styled_button},
+    components::{ButtonHierarchy, ButtonKind, CONTROL_ROW_HEIGHT, styled_button},
     t,
     theme::use_theme,
 };
@@ -84,12 +84,12 @@ pub fn view<'a>(
             space::horizontal(),
             styled_button(t!("password-dialog-cancel"))
                 .kind(ButtonKind::Outline)
-                .height(Length::Fixed(50.))
+                .height(Length::Fixed(CONTROL_ROW_HEIGHT))
                 .on_press(Message::DialogCancelled(id)),
             styled_button(t!("password-dialog-confirm"))
                 .kind(ButtonKind::Solid)
                 .hierarchy(ButtonHierarchy::Primary)
-                .height(Length::Fixed(50.))
+                .height(Length::Fixed(CONTROL_ROW_HEIGHT))
                 .on_press_maybe(if !warning_only && current_password.is_empty() {
                     None
                 } else {

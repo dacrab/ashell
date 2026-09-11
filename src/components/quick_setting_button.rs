@@ -1,6 +1,6 @@
 use crate::{
     components::{
-        ButtonSize,
+        ButtonSize, CONTROL_ROW_HEIGHT,
         icons::{IconKind, StaticIcon, icon_button},
     },
     modules::settings::SubMenu,
@@ -79,7 +79,7 @@ pub fn quick_setting_button<'a, Msg: Clone + 'static>(
         .on_press(on_press)
         .style(settings_btn_style)
         .width(Length::Fill)
-        .height(Length::Fixed(50.))
+        .height(Length::Fixed(CONTROL_ROW_HEIGHT))
         .into()
     };
 

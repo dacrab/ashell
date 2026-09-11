@@ -57,17 +57,13 @@ pub enum IconPosition {
     After,
 }
 
-pub(crate) enum OnPress<Message> {
-    Direct(Message),
-}
-
 pub struct StyledButton<'a, Message> {
     label: Element<'a, Message>,
     icon: Option<(IconKind, IconPosition)>,
     kind: ButtonKind,
     hierarchy: ButtonHierarchy,
     size: ButtonSize,
-    on_press: Option<OnPress<Message>>,
+    on_press: Option<Message>,
     width: Option<Length>,
     height: Option<Length>,
 }
@@ -94,12 +90,12 @@ impl<'a, Message: 'static + Clone> StyledButton<'a, Message> {
     }
 
     pub fn on_press(mut self, on_press: Message) -> Self {
-        self.on_press = Some(OnPress::Direct(on_press));
+        self.on_press = Some(on_press);
         self
     }
 
     pub fn on_press_maybe(mut self, on_press: Option<Message>) -> Self {
-        self.on_press = on_press.map(OnPress::Direct);
+        self.on_press = on_press;
         self
     }
 
@@ -161,7 +157,7 @@ impl<'a, Message: 'static + Clone> From<StyledButton<'a, Message>> for Element<'
         }
 
         let btn = match value.on_press {
-            Some(OnPress::Direct(message)) => btn.on_press(message),
+            Some(message) => btn.on_press(message),
             None => btn,
         };
 

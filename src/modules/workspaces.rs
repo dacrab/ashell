@@ -56,14 +56,14 @@ fn resolve_workspace_icons(window_classes: &[String]) -> Vec<XdgIcon> {
         .map(|class| class.to_lowercase())
         .unique()
         .map(|class_lower| {
-            xdg_icons::get_icon_from_name(&class_lower).unwrap_or_else(xdg_icons::fallback_icon)
+            xdg_icons::icon_from_name(&class_lower).unwrap_or_else(xdg_icons::fallback_icon)
         })
         .collect()
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ServiceEvent(Box<ServiceEvent<CompositorService>>),
+    Event(Box<ServiceEvent<CompositorService>>),
     ChangeWorkspace(i32),
     ToggleSpecialWorkspace(i32),
     Scroll(i32, Option<String>),
@@ -295,22 +295,20 @@ fn workspace_button<'a>(
         text(name).size(font_size).into()
     } else {
         let icon_size = font_size + 4.0;
-        let children: Vec<Element<'a, Message>> =
-            std::iter::once(text(name).size(font_size).into())
-                .chain(icons.into_iter().map(|i| {
-                    match i {
-                        XdgIcon::Svg(handle) => Svg::new(handle)
-                            .height(Length::Fixed(icon_size))
-                            .width(Length::Shrink)
-                            .into(),
-                        XdgIcon::Image(handle) => Image::new(handle)
-                            .height(Length::Fixed(icon_size))
-                            .width(Length::Shrink)
-                            .into(),
-                        XdgIcon::NerdFont(si) => icon(si).size(icon_size).into(),
-                    }
-                }))
-                .collect();
+        let children =
+            std::iter::once(text(name).size(font_size).into()).chain(icons.into_iter().map(|i| {
+                match i {
+                    XdgIcon::Svg(handle) => Svg::new(handle)
+                        .height(Length::Fixed(icon_size))
+                        .width(Length::Shrink)
+                        .into(),
+                    XdgIcon::Image(handle) => Image::new(handle)
+                        .height(Length::Fixed(icon_size))
+                        .width(Length::Shrink)
+                        .into(),
+                    XdgIcon::NerdFont(si) => icon(si).size(icon_size).into(),
+                }
+            }));
         Row::with_children(children)
             .spacing(theme.space.xxs)
             .align_y(alignment::Vertical::Center)
@@ -345,19 +343,12 @@ impl Workspaces {
 
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
-            Message::ServiceEvent(event) => {
-                match *event {
-                    ServiceEvent::Init(s) => {
-                        self.service = Some(s);
-                        self.recalculate_ui_workspaces();
-                    }
-                    ServiceEvent::Update(e) => {
-                        if let Some(s) = &mut self.service {
-                            s.update(e);
-                            self.recalculate_ui_workspaces();
-                        }
-                    }
-                    _ => {}
+            Message::Event(event) => {
+                if matches!(
+                    event.apply(&mut self.service),
+                    crate::services::Applied::Init | crate::services::Applied::Updated
+                ) {
+                    self.recalculate_ui_workspaces();
                 }
                 iced::Task::none()
             }
@@ -375,11 +366,11 @@ impl Workspaces {
                                     "vdesk".to_string(),
                                     id.to_string(),
                                 ))
-                                .map(|event| Message::ServiceEvent(Box::new(event)));
+                                .map(|event| Message::Event(Box::new(event)));
                         } else {
                             return service
                                 .command(CompositorCommand::FocusWorkspace(id))
-                                .map(|event| Message::ServiceEvent(Box::new(event)));
+                                .map(|event| Message::Event(Box::new(event)));
                         }
                     }
                 }
@@ -397,7 +388,7 @@ impl Workspaces {
                                 .last()
                                 .map_or_else(|| special.name.clone(), |s| s.to_string()),
                         ))
-                        .map(|event| Message::ServiceEvent(Box::new(event)));
+                        .map(|event| Message::Event(Box::new(event)));
                 }
                 iced::Task::none()
             }
@@ -411,7 +402,7 @@ impl Workspaces {
                     .and_then(|name| {
                         self.ui_workspaces.iter().position(|w| {
                             !w.monitor.is_empty()
-                                && name.contains(w.monitor.as_str())
+                                && name == w.monitor.as_str()
                                 && matches!(w.displayed, Displayed::Active | Displayed::Visible)
                         })
                     })
@@ -510,7 +501,7 @@ impl Workspaces {
     }
 
     pub fn view<'a>(&'a self, id: SurfaceId, outputs: &Outputs) -> Element<'a, Message> {
-        let monitor_name = outputs.get_monitor_name(id);
+        let monitor_name = outputs.monitor_name(id);
 
         let row = use_theme(|theme| {
             Row::with_children(
@@ -577,107 +568,85 @@ impl Workspaces {
                                     && !w.name.is_empty()
                                     && w.name.chars().all(|c| c.is_ascii_digit());
 
-                                Some(if numbered {
-                                    let target_width = match (&w.displayed, urgent) {
-                                        (Displayed::Active, _) => theme.space.xl,
-                                        (Displayed::Visible, _) | (Displayed::Hidden, true) => {
-                                            theme.space.lg
-                                        }
-                                        (Displayed::Hidden, false) => theme.space.md,
+                                // (animated scalar, is fixed-width): the two
+                                // branches below differ only in what animates.
+                                let (target, fixed_width) =
+                                    if numbered {
+                                        (
+                                            match (&w.displayed, urgent) {
+                                                (Displayed::Active, _) => theme.space.xl,
+                                                (Displayed::Visible, _)
+                                                | (Displayed::Hidden, true) => theme.space.lg,
+                                                (Displayed::Hidden, false) => theme.space.md,
+                                            },
+                                            true,
+                                        )
+                                    } else {
+                                        (
+                                            match (&w.displayed, urgent) {
+                                                (Displayed::Active, _) => theme.space.md,
+                                                (Displayed::Visible, _)
+                                                | (Displayed::Hidden, true) => theme.space.sm,
+                                                (Displayed::Hidden, false) => theme.space.xs,
+                                            },
+                                            false,
+                                        )
                                     };
 
-                                    if theme.animations_enabled {
-                                        AnimationBuilder::new(target_width, move |width| {
-                                            let name = name.clone();
-                                            let icons = icons.clone();
-                                            let on_press = on_press.clone();
-                                            use_theme(move |theme| {
-                                                workspace_button(
-                                                    theme,
-                                                    name.clone(),
-                                                    icons.clone(),
-                                                    font_size,
-                                                    empty,
-                                                    urgent,
-                                                    active,
-                                                    color,
-                                                    Length::Fixed(width),
-                                                    0.0,
-                                                    height,
-                                                    on_press.clone(),
-                                                )
-                                            })
+                                if theme.animations_enabled {
+                                    let build = move |value: f32| {
+                                        // Clone per invocation: the builder may
+                                        // call `build` repeatedly and the inner
+                                        // `move` closure captures fresh data.
+                                        let (name, icons, on_press) =
+                                            (name.clone(), icons.clone(), on_press.clone());
+                                        use_theme(move |theme| {
+                                            workspace_button(
+                                                theme,
+                                                name,
+                                                icons,
+                                                font_size,
+                                                empty,
+                                                urgent,
+                                                active,
+                                                color,
+                                                if fixed_width {
+                                                    Length::Fixed(value)
+                                                } else {
+                                                    Length::Shrink
+                                                },
+                                                if fixed_width { 0.0 } else { value },
+                                                height,
+                                                on_press,
+                                            )
                                         })
-                                        .animates_layout(true)
-                                        .animation(Easing::EASE.very_quick())
-                                        .into()
-                                    } else {
-                                        workspace_button(
-                                            theme,
-                                            name,
-                                            icons,
-                                            font_size,
-                                            empty,
-                                            urgent,
-                                            active,
-                                            color,
-                                            Length::Fixed(target_width),
-                                            0.0,
-                                            height,
-                                            on_press,
-                                        )
-                                    }
+                                    };
+                                    Some(
+                                        AnimationBuilder::new(target, build)
+                                            .animates_layout(true)
+                                            .animation(Easing::EASE.very_quick())
+                                            .into(),
+                                    )
                                 } else {
-                                    let target_padding = match (&w.displayed, urgent) {
-                                        (Displayed::Active, _) => theme.space.md,
-                                        (Displayed::Visible, _) | (Displayed::Hidden, true) => {
-                                            theme.space.sm
-                                        }
-                                        (Displayed::Hidden, false) => theme.space.xs,
-                                    };
-
-                                    if theme.animations_enabled {
-                                        AnimationBuilder::new(target_padding, move |padding| {
-                                            let name = name.clone();
-                                            let icons = icons.clone();
-                                            let on_press = on_press.clone();
-                                            use_theme(move |theme| {
-                                                workspace_button(
-                                                    theme,
-                                                    name.clone(),
-                                                    icons.clone(),
-                                                    font_size,
-                                                    empty,
-                                                    urgent,
-                                                    active,
-                                                    color,
-                                                    Length::Shrink,
-                                                    padding,
-                                                    height,
-                                                    on_press.clone(),
-                                                )
-                                            })
-                                        })
-                                        .animates_layout(true)
-                                        .animation(Easing::EASE.very_quick())
-                                        .into()
-                                    } else {
-                                        workspace_button(
-                                            theme,
-                                            name,
-                                            icons,
-                                            font_size,
-                                            empty,
-                                            urgent,
-                                            active,
-                                            color,
-                                            Length::Shrink,
-                                            target_padding,
-                                            height,
-                                            on_press,
-                                        )
-                                    }
-                                })
+                                    Some(workspace_button(
+                                        theme,
+                                        name.clone(),
+                                        icons.clone(),
+                                        font_size,
+                                        empty,
+                                        urgent,
+                                        active,
+                                        color,
+                                        if fixed_width {
+                                            Length::Fixed(target)
+                                        } else {
+                                            Length::Shrink
+                                        },
+                                        if fixed_width { 0.0 } else { target },
+                                        height,
+                                        on_press,
+                                    ))
+                                }
                             }
                         } else {
                             None
@@ -693,47 +662,33 @@ impl Workspaces {
         MouseArea::new(row)
             .on_scroll(move |direction| {
                 let scroll = |dir: i32| Message::Scroll(dir, scroll_monitor.clone());
+                // Resolve the inverted direction for a scroll unit: `up`
+                // selects the direction, `is_trackpad` picks which config
+                // entries invert it.
+                let scrolled = |up: bool, is_trackpad: bool| {
+                    let inverted = match self.config.invert_scroll_direction {
+                        Some(InvertScrollDirection::All) => true,
+                        Some(InvertScrollDirection::Mouse) if !is_trackpad => true,
+                        Some(InvertScrollDirection::Trackpad) if is_trackpad => true,
+                        _ => false,
+                    };
+                    scroll(if inverted == up { 1 } else { -1 })
+                };
                 match direction {
                     iced::mouse::ScrollDelta::Lines { y, .. } => {
-                        if y.is_sign_positive() {
-                            match self.config.invert_scroll_direction {
-                                Some(InvertScrollDirection::All | InvertScrollDirection::Mouse) => {
-                                    scroll(-1)
-                                }
-                                Some(InvertScrollDirection::Trackpad) => scroll(1),
-                                None => scroll(1),
-                            }
-                        } else {
-                            match self.config.invert_scroll_direction {
-                                Some(InvertScrollDirection::All | InvertScrollDirection::Mouse) => {
-                                    scroll(1)
-                                }
-                                Some(InvertScrollDirection::Trackpad) => scroll(-1),
-                                None => scroll(-1),
-                            }
-                        }
+                        scrolled(y.is_sign_positive(), false)
                     }
                     iced::mouse::ScrollDelta::Pixels { y, .. } => {
+                        // Trackpad pixel deltas are tiny and arrive in bursts;
+                        // accumulate until they cross the threshold, then step
+                        // once. `Message::Scroll` (handled above) resets the
+                        // accumulator.
                         let sensibility = 3.;
 
                         if self.scroll_accumulator.abs() < sensibility {
                             Message::ScrollAccumulator(y)
-                        } else if self.scroll_accumulator.is_sign_positive() {
-                            match self.config.invert_scroll_direction {
-                                Some(
-                                    InvertScrollDirection::All | InvertScrollDirection::Trackpad,
-                                ) => scroll(-1),
-                                Some(InvertScrollDirection::Mouse) => scroll(1),
-                                None => scroll(1),
-                            }
                         } else {
-                            match self.config.invert_scroll_direction {
-                                Some(
-                                    InvertScrollDirection::All | InvertScrollDirection::Trackpad,
-                                ) => scroll(1),
-                                Some(InvertScrollDirection::Mouse) => scroll(-1),
-                                None => scroll(-1),
-                            }
+                            scrolled(self.scroll_accumulator.is_sign_positive(), true)
                         }
                     }
                 }
@@ -742,6 +697,6 @@ impl Workspaces {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        CompositorService::subscribe().map(|event| Message::ServiceEvent(Box::new(event)))
+        CompositorService::subscribe().map(|event| Message::Event(Box::new(event)))
     }
 }

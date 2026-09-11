@@ -5,7 +5,7 @@ use crate::{
         ButtonHierarchy, ButtonKind, ButtonUIRef, IconPosition, MenuSize, position_button,
         styled_button,
     },
-    components::{scrollable, toggler},
+    components::{menu::MAX_MENU_HEIGHT, scrollable, toggler},
     config::{TrayClickAction, TrayModuleConfig},
     services::{
         ReadOnlyService, Service, ServiceEvent,
@@ -21,8 +21,6 @@ use iced::{
     widget::{Column, Image, Row, Svg, container, text},
 };
 use log::debug;
-
-const MENU_MAX_HEIGHT: f32 = 600.;
 
 fn is_separator(layout: &Layout) -> bool {
     layout.1.type_.as_deref() == Some("separator")
@@ -59,6 +57,7 @@ pub enum Message {
     MenuToggled(String, i32),
     MenuOpened(String),
     Activate(String),
+    ConfigReloaded(TrayModuleConfig),
 }
 
 pub enum Action {
@@ -70,25 +69,43 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone)]
-pub struct TrayModule {
+pub struct Tray {
     service: Option<TrayService>,
     submenus: Vec<i32>,
     blocklist: Vec<crate::config::RegexCfg>,
     right_click: Option<TrayClickAction>,
+    /// Cached set of blocklisted item names, recomputed on every service
+    /// update so `view()` doesn't run the blocklist regexes per frame.
+    hidden_names: std::collections::HashSet<String>,
 }
 
-impl TrayModule {
+impl Tray {
     pub fn new(config: TrayModuleConfig) -> Self {
         Self {
             service: None,
             submenus: Vec::new(),
             blocklist: config.blocklist.clone(),
             right_click: config.right_click,
+            hidden_names: std::collections::HashSet::new(),
         }
     }
 
+    fn refresh_hidden_names(&mut self) {
+        self.hidden_names = self
+            .service
+            .iter()
+            .flat_map(|service| service.data.iter())
+            .filter(|item| {
+                self.blocklist
+                    .iter()
+                    .any(|pattern| pattern.is_match(&item.name))
+            })
+            .map(|item| item.name.clone())
+            .collect();
+    }
+
     fn is_blocklisted(&self, name: &str) -> bool {
-        self.blocklist.iter().any(|pattern| pattern.is_match(name))
+        self.hidden_names.contains(name)
     }
 
     pub fn update(&mut self, message: Message) -> Action {
@@ -96,6 +113,7 @@ impl TrayModule {
             Message::Event(event) => match *event {
                 ServiceEvent::Init(service) => {
                     self.service = Some(service);
+                    self.refresh_hidden_names();
                     Action::None
                 }
                 ServiceEvent::Update(data) => {
@@ -108,6 +126,7 @@ impl TrayModule {
                     if let Some(service) = self.service.as_mut() {
                         service.update(data);
                     }
+                    self.refresh_hidden_names();
 
                     action
                 }
@@ -169,6 +188,12 @@ impl TrayModule {
                 }
                 _ => Action::None,
             },
+            Message::ConfigReloaded(config) => {
+                self.blocklist = config.blocklist;
+                self.right_click = config.right_click;
+                self.refresh_hidden_names();
+                Action::None
+            }
         }
     }
 
@@ -268,53 +293,55 @@ impl TrayModule {
         });
         let button_style = std::sync::Arc::new(button_style);
 
-        self.service
-            .as_ref()
-            .filter(|s| s.data.iter().any(|item| !self.is_blocklisted(&item.name)))
-            .map(|service| {
-                Into::<Element<_>>::into(
-                    Row::with_children(
-                        service
-                            .data
-                            .iter()
-                            .filter(|item| !self.is_blocklisted(&item.name))
-                            .map(|item| {
-                                let name = item.name.to_owned();
-                                let button_style = button_style.clone();
-                                let icon_content: Element<'_, Message> = match &item.icon {
-                                    Some(TrayIcon::Image(handle)) => Image::new(handle.clone())
-                                        .height(Length::Fixed(font_size.md - 2.0))
-                                        .into(),
-                                    Some(TrayIcon::Svg(handle)) => Svg::new(handle.clone())
-                                        .height(Length::Fixed(font_size.md + 2.))
-                                        .width(Length::Fixed(font_size.md + 2.))
-                                        .content_fit(iced::ContentFit::Cover)
-                                        .into(),
-                                    _ => icon(StaticIcon::Point).into(),
-                                };
-                                let open_app = Message::Activate(name.clone());
-                                let toggle_menu = move |r| Message::ToggleMenu(name.clone(), id, r);
+        let service = self.service.as_ref()?;
+        let items: Vec<_> = service
+            .data
+            .iter()
+            .filter(|item| !self.is_blocklisted(&item.name))
+            .collect();
+        if items.is_empty() {
+            return None;
+        }
+        Some(Into::<Element<_>>::into(
+            Row::with_children(
+                items
+                    .into_iter()
+                    .map(|item| {
+                        let name = item.name.to_owned();
+                        let button_style = button_style.clone();
+                        let icon_content: Element<'_, Message> = match &item.icon {
+                            Some(TrayIcon::Image(handle)) => Image::new(handle.clone())
+                                .height(Length::Fixed(font_size.md - 2.0))
+                                .into(),
+                            Some(TrayIcon::Svg(handle)) => Svg::new(handle.clone())
+                                .height(Length::Fixed(font_size.md + 2.))
+                                .width(Length::Fixed(font_size.md + 2.))
+                                .content_fit(iced::ContentFit::Cover)
+                                .into(),
+                            _ => icon(StaticIcon::Point).into(),
+                        };
+                        let open_app = Message::Activate(name.clone());
+                        let toggle_menu = move |r| Message::ToggleMenu(name.clone(), id, r);
 
-                                let mut btn = position_button(icon_content);
-                                btn = match &self.right_click {
-                                    None => btn.on_press_with_position(toggle_menu.clone()),
-                                    Some(TrayClickAction::Open) => btn
-                                        .on_press_with_position(toggle_menu.clone())
-                                        .on_right_press(open_app.clone()),
-                                    Some(TrayClickAction::Menu) => btn
-                                        .on_press(open_app.clone())
-                                        .on_right_press_with_position(toggle_menu.clone()),
-                                };
-                                btn.padding(space.xxs)
-                                    .style(move |t, s| button_style(t, s))
-                                    .into()
-                            })
-                            .collect::<Vec<_>>(),
-                    )
-                    .padding([2.0, 0.])
-                    .align_y(Alignment::Center),
-                )
-            })
+                        let mut btn = position_button(icon_content);
+                        btn = match &self.right_click {
+                            None => btn.on_press_with_position(toggle_menu.clone()),
+                            Some(TrayClickAction::Open) => btn
+                                .on_press_with_position(toggle_menu.clone())
+                                .on_right_press(open_app.clone()),
+                            Some(TrayClickAction::Menu) => btn
+                                .on_press(open_app.clone())
+                                .on_right_press_with_position(toggle_menu.clone()),
+                        };
+                        btn.padding(space.xxs)
+                            .style(move |t, s| button_style(t, s))
+                            .into()
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .padding([2.0, 0.])
+            .align_y(Alignment::Center),
+        ))
     }
 
     pub fn menu_view<'a>(&'a self, name: &'a str) -> Element<'a, Message> {
@@ -333,7 +360,7 @@ impl TrayModule {
 
         container(scrollable(items).spacing(space.xs))
             .width(MenuSize::Medium)
-            .max_height(MENU_MAX_HEIGHT)
+            .max_height(MAX_MENU_HEIGHT)
             .into()
     }
 

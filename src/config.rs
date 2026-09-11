@@ -1,3 +1,8 @@
+//! User configuration: the TOML schema (serde types + defaults), validation
+//! (out-of-range values are clamped with a warning, not rejected), the CSS
+//! shorthand deserializers for radius/margin, and the hot-reload
+//! [`subscription`] watching the config file.
+
 use crate::app::Message;
 use crate::i18n::{TemperatureUnit, UnitSystem, unit_system};
 use crate::services::upower::PeripheralDeviceKind;
@@ -52,7 +57,7 @@ impl Default for LoggingConfig {
 impl LoggingConfig {
     pub fn log_directory(&self) -> PathBuf {
         let default_directory = || {
-            crate::xdg::get_runtime_dir().unwrap_or_else(|| {
+            crate::xdg::runtime_dir().unwrap_or_else(|| {
                 [std::env::temp_dir(), PathBuf::from("ashell")]
                     .iter()
                     .collect()
@@ -85,7 +90,7 @@ pub struct Config {
     pub custom_modules: Vec<CustomModuleDef>,
     pub updates: Option<UpdatesModuleConfig>,
     pub workspaces: WorkspacesModuleConfig,
-    pub window_title: WindowTitleConfig,
+    pub window_title: WindowTitleModuleConfig,
     pub system_info: SystemInfoModuleConfig,
     pub notifications: NotificationsModuleConfig,
     pub tray: TrayModuleConfig,
@@ -96,7 +101,7 @@ pub struct Config {
     pub keyboard_layout: KeyboardLayoutModuleConfig,
     pub animations: AnimationsConfig,
     pub enable_esc_key: bool,
-    pub osd: OsdConfig,
+    pub osd: OsdModuleConfig,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -110,6 +115,7 @@ impl Config {
         if let Some(ref mut updates) = self.updates {
             updates.validate();
         }
+        self.workspaces.validate();
         self.system_info.validate();
         self.tempo.validate();
         self.settings.validate();
@@ -167,6 +173,20 @@ pub struct WorkspacesModuleConfig {
     pub invert_scroll_direction: Option<InvertScrollDirection>,
 }
 
+impl WorkspacesModuleConfig {
+    const MAX_WORKSPACES: u32 = 100;
+
+    fn validate(&mut self) {
+        if let Some(max) = self.max_workspaces {
+            let clamped = max.min(Self::MAX_WORKSPACES);
+            if clamped != max {
+                warn!("WorkspacesModuleConfig.max_workspaces is {max}, setting to {clamped}");
+                self.max_workspaces = Some(clamped);
+            }
+        }
+    }
+}
+
 #[derive(Deserialize, Copy, Clone, Default, PartialEq, Eq, Debug)]
 pub enum InvertScrollDirection {
     #[default]
@@ -186,12 +206,12 @@ pub enum WindowTitleMode {
 
 #[derive(Deserialize, Copy, Clone, Debug)]
 #[serde(default)]
-pub struct WindowTitleConfig {
+pub struct WindowTitleModuleConfig {
     pub mode: WindowTitleMode,
     pub truncate_title_after_length: u32,
 }
 
-impl Default for WindowTitleConfig {
+impl Default for WindowTitleModuleConfig {
     fn default() -> Self {
         Self {
             mode: Default::default(),
@@ -328,8 +348,12 @@ impl SystemInfoTemperature {
     }
 
     fn validate(&mut self) {
-        if let (Some(warn), Some(alert)) = (&mut self.warn_threshold, &mut self.alert_threshold) {
-            validate_thresholds(warn, alert, "Temperature");
+        let mut warn = self.warn_threshold();
+        let mut alert = self.alert_threshold();
+        let original_warn = warn;
+        validate_thresholds(&mut warn, &mut alert, "Temperature");
+        if warn != original_warn {
+            self.warn_threshold = Some(warn);
         }
     }
 }
@@ -850,21 +874,21 @@ pub enum AppearanceColor {
 }
 
 impl AppearanceColor {
-    pub fn get_base(&self) -> Color {
+    pub fn base(&self) -> Color {
         match self {
             AppearanceColor::Simple(color) => hex_to_color(*color),
             AppearanceColor::Complete { base, .. } => hex_to_color(*base),
         }
     }
 
-    pub fn get_text(&self) -> Option<Color> {
+    pub fn text(&self) -> Option<Color> {
         match self {
             AppearanceColor::Simple(_) => None,
             AppearanceColor::Complete { text, .. } => text.map(hex_to_color),
         }
     }
 
-    pub fn get_weak_pair(&self, text_fallback: Color) -> Option<palette::Pair> {
+    pub fn weak_pair(&self, text_fallback: Color) -> Option<palette::Pair> {
         match self {
             AppearanceColor::Simple(_) => None,
             AppearanceColor::Complete { weak, text, .. } => {
@@ -873,7 +897,7 @@ impl AppearanceColor {
         }
     }
 
-    pub fn get_strong_pair(&self, text_fallback: Color) -> Option<palette::Pair> {
+    pub fn strong_pair(&self, text_fallback: Color) -> Option<palette::Pair> {
         match self {
             AppearanceColor::Simple(_) => None,
             AppearanceColor::Complete { strong, text, .. } => {
@@ -901,21 +925,21 @@ pub enum BackgroundAppearanceColor {
 }
 
 impl BackgroundAppearanceColor {
-    pub fn get_base(&self) -> Color {
+    pub fn base(&self) -> Color {
         match self {
             BackgroundAppearanceColor::Simple(color) => hex_to_color(*color),
             BackgroundAppearanceColor::Complete { base, .. } => hex_to_color(*base),
         }
     }
 
-    pub fn get_text(&self) -> Option<Color> {
+    pub fn text(&self) -> Option<Color> {
         match self {
             BackgroundAppearanceColor::Simple(_) => None,
             BackgroundAppearanceColor::Complete { text, .. } => text.map(hex_to_color),
         }
     }
 
-    pub fn get_pair(&self, level: BackgroundLevel, text_fallback: Color) -> Option<palette::Pair> {
+    pub fn pair(&self, level: BackgroundLevel, text_fallback: Color) -> Option<palette::Pair> {
         match self {
             BackgroundAppearanceColor::Simple(_) => None,
             BackgroundAppearanceColor::Complete {
@@ -1068,6 +1092,7 @@ pub struct BarAppearance {
 #[derive(Deserialize, Default, Clone, Copy, Debug)]
 #[serde(default)]
 pub struct MenuAppearance {
+    #[serde(deserialize_with = "backdrop_deserializer")]
     pub backdrop: f32,
 }
 
@@ -1258,6 +1283,27 @@ fn check_opacity(v: f64) -> Result<f32, &'static str> {
     Ok(v as f32)
 }
 
+fn check_backdrop(v: f64) -> Result<f32, &'static str> {
+    if v < 0.0 {
+        return Err("Backdrop cannot be negative");
+    }
+
+    if v > 1.0 {
+        return Err("Backdrop cannot be greater than 1.0");
+    }
+
+    Ok(v as f32)
+}
+
+fn backdrop_deserializer<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = f64::deserialize(deserializer)?;
+
+    check_backdrop(v).map_err(serde::de::Error::custom)
+}
+
 impl Default for Appearance {
     fn default() -> Self {
         Self {
@@ -1307,6 +1353,9 @@ pub enum Layer {
     Overlay,
 }
 
+/// A module name from the config. Unknown names fall back to
+/// [`ModuleName::Custom`], so a typo in `modules` silently becomes an empty
+/// custom module rather than a config error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModuleName {
     Updates,
@@ -1507,14 +1556,14 @@ pub struct CustomModuleDef {
 
 #[derive(Deserialize, Clone, Debug)]
 #[serde(default)]
-pub struct OsdConfig {
+pub struct OsdModuleConfig {
     pub enabled: bool,
     pub timeout: u64,
     pub show_volume_percentage: bool,
     pub show_brightness_percentage: bool,
 }
 
-impl Default for OsdConfig {
+impl Default for OsdModuleConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1527,14 +1576,14 @@ impl Default for OsdConfig {
 
 /// Parses just the `[logging]` table, before the logger exists: no `log::*`
 /// here, problems go to `stderr`.
-pub fn read_logging_config(path: Option<&PathBuf>) -> LoggingConfig {
+pub fn read_logging_config(path: Option<&Path>) -> LoggingConfig {
     #[derive(Deserialize)]
     struct LoggingConfigWrapper {
         #[serde(default)]
         logging: LoggingConfig,
     }
 
-    let config_path = match resolve_config_path(path.map(PathBuf::as_path)) {
+    let config_path = match resolve_config_path(path) {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
@@ -1576,7 +1625,7 @@ fn resolve_config_path(path: Option<&Path>) -> Result<PathBuf, Box<dyn Error + S
     })
 }
 
-pub fn get_config(path: Option<PathBuf>) -> Result<(Config, PathBuf), Box<dyn Error + Send>> {
+pub fn load(path: Option<PathBuf>) -> Result<(Config, PathBuf), Box<dyn Error + Send>> {
     let explicit = path.is_some();
     let expanded = resolve_config_path(path.as_deref())?;
 
@@ -1591,13 +1640,18 @@ pub fn get_config(path: Option<PathBuf>) -> Result<(Config, PathBuf), Box<dyn Er
         }
     } else {
         // DEFAULT_CONFIG_FILE_PATH has a parent and shellexpand never strips components.
-        let parent = expanded
-            .parent()
-            .expect("Failed to get default config parent directory");
+        let Some(parent) = expanded.parent() else {
+            return Err(Box::new(std::io::Error::other(
+                "default config path has no parent directory",
+            )));
+        };
 
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .expect("Failed to create default config parent directory");
+        if !parent.exists()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return Err(Box::new(std::io::Error::other(format!(
+                "failed to create default config parent directory: {e}"
+            ))));
         }
     }
 
@@ -1618,11 +1672,11 @@ fn read_config(path: &Path) -> Result<Config, Box<dyn Error + Send>> {
 
     info!("Decoding config file {path:?}");
 
-    let de =
-        toml::Deserializer::parse(&content).map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
     let mut unknown_fields = Vec::new();
-    let res = serde_ignored::deserialize(de, |path| {
-        unknown_fields.push(path.to_string());
+    let res = toml::Deserializer::parse(&content).and_then(|de| {
+        serde_ignored::deserialize(de, |path| {
+            unknown_fields.push(path.to_string());
+        })
     });
 
     match res {
@@ -1638,7 +1692,9 @@ fn read_config(path: &Path) -> Result<Config, Box<dyn Error + Send>> {
             Ok(config)
         }
         Err(e) => {
-            warn!("Failed to parse config file: {e}");
+            let msg = format!("Failed to parse config file: {e}");
+            warn!("{msg}");
+            eprintln!("ashell: warning: {msg}");
             Err(Box::new(e))
         }
     }
@@ -1659,6 +1715,11 @@ pub fn subscription(path: &Path) -> Subscription<Message> {
                 (Some(folder), Some(file_name), Ok(inotify)) => {
                     debug!("Watching config file at {path:?}");
 
+                    // Watch the parent directory, not the file itself: editors
+                    // that save atomically replace the file (rename), which
+                    // orphans a watch on the old inode. Events are filtered by
+                    // file name below and batched with ready_chunks to collapse
+                    // save bursts.
                     let res = inotify.watches().add(
                         folder,
                         WatchMask::CREATE | WatchMask::DELETE | WatchMask::MOVE | WatchMask::MODIFY,
@@ -1677,9 +1738,10 @@ pub fn subscription(path: &Path) -> Subscription<Message> {
 
                         debug!("Starting config file watch loop");
 
-                        loop {
-                            let events = stream.next().await.unwrap_or(vec![]);
-
+                        // `while let` (vs `loop`+`unwrap_or`) so the loop ends
+                        // if the inotify stream ever terminates instead of
+                        // busy-spinning on a finished stream.
+                        while let Some(events) = stream.next().await {
                             debug!("Received inotify events: {events:?}");
 
                             let mut file_event = None;
@@ -1727,7 +1789,10 @@ pub fn subscription(path: &Path) -> Subscription<Message> {
                                         .await;
                                 }
                                 Some(Event::Removed) => {
-                                    // wait and double check if the file is really gone
+                                    // Atomic saves surface as DELETE + CREATE
+                                    // within milliseconds; wait that window out
+                                    // and only fall back to the default config
+                                    // if the file is truly gone.
                                     sleep(Duration::from_millis(500)).await;
 
                                     if !path.exists() {

@@ -1,5 +1,5 @@
 use crate::app::{self, App};
-use crate::components::{self, ButtonUIRef};
+use crate::components::{self, ANIMATION_DURATION, ButtonUIRef};
 use crate::config::{BarSurface, Position, Surface};
 use crate::theme::{backdrop_color, surface_border, use_theme};
 use iced::alignment::Vertical;
@@ -10,9 +10,6 @@ use iced::{
     set_keyboard_interactivity,
     widget::{blur_container, container},
 };
-use std::time::Duration;
-
-pub const ANIMATION_DURATION: Duration = Duration::from_millis(100);
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum MenuType {
@@ -31,6 +28,22 @@ pub enum MenuType {
     PeripheralBatteryTooltip(usize),
 }
 
+impl MenuType {
+    /// Whether this menu type is a hover tooltip (positioned over its trigger
+    /// and never animates open/closed).
+    pub fn is_tooltip(&self) -> bool {
+        matches!(
+            self,
+            MenuType::AudioTooltip
+                | MenuType::BluetoothTooltip
+                | MenuType::WifiTooltip
+                | MenuType::VpnTooltip
+                | MenuType::BatteryTooltip
+                | MenuType::PeripheralBatteryTooltip(_)
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OpenMenu {
     pub id: SurfaceId,
@@ -46,6 +59,10 @@ struct PendingOpen {
     output_id: Option<OutputId>,
 }
 
+/// One menu slot per bar surface, on its own layer-shell window. `open`
+/// holds the live surface; `closing` spans the close animation, after which
+/// `finish_close` destroys it (and opens `pending_open` if a different menu
+/// was requested during that window).
 #[derive(Clone, Debug)]
 pub struct Menu {
     pub open: Option<OpenMenu>,
@@ -195,15 +212,7 @@ impl Menu {
             return Task::none();
         }
 
-        let menu_is_tooltip = matches!(
-            menu_type,
-            MenuType::AudioTooltip
-                | MenuType::BluetoothTooltip
-                | MenuType::WifiTooltip
-                | MenuType::VpnTooltip
-                | MenuType::BatteryTooltip
-                | MenuType::PeripheralBatteryTooltip(_)
-        );
+        let menu_is_tooltip = menu_type.is_tooltip();
         match &mut self.open {
             None => self.open(menu_type, button_ui_ref, request_keyboard, output_id),
             Some(open) if open.menu_type == menu_type => {
@@ -214,19 +223,7 @@ impl Menu {
                     self.close()
                 }
             }
-            Some(open)
-                if !matches!(
-                    open.menu_type,
-                    MenuType::AudioTooltip
-                        | MenuType::BluetoothTooltip
-                        | MenuType::WifiTooltip
-                        | MenuType::VpnTooltip
-                        | MenuType::BatteryTooltip
-                        | MenuType::PeripheralBatteryTooltip(_)
-                ) && menu_is_tooltip =>
-            {
-                Task::none()
-            }
+            Some(open) if !open.menu_type.is_tooltip() && menu_is_tooltip => Task::none(),
             Some(open) => {
                 open.menu_type = menu_type;
                 open.button_ui_ref = button_ui_ref;
@@ -262,7 +259,8 @@ impl Menu {
     }
 }
 
-#[allow(unused)]
+pub(crate) const MAX_MENU_HEIGHT: f32 = 600.;
+
 pub enum MenuSize {
     Small,
     Medium,
@@ -294,23 +292,24 @@ impl From<MenuSize> for Pixels {
 }
 
 impl App {
-    #[allow(clippy::too_many_arguments)]
     pub fn menu_wrapper<'a>(
         &'a self,
         id: SurfaceId,
         content: Element<'a, app::Message>,
         button_ui_ref: ButtonUIRef,
     ) -> Element<'a, app::Message> {
-        let (space, radius, bar_surface, bar_position, menu_backdrop, blur) = use_theme(|t| {
-            (
-                t.space,
-                t.radius,
-                t.bar_surface,
-                t.bar_position,
-                t.menu.backdrop,
-                t.surface(Surface::Menu).blur,
-            )
-        });
+        let (space, radius, bar_surface, bar_position, menu_backdrop, blur, animations_enabled) =
+            use_theme(|t| {
+                (
+                    t.space,
+                    t.radius,
+                    t.bar_surface,
+                    t.bar_position,
+                    t.menu.backdrop,
+                    t.surface(Surface::Menu).blur,
+                    t.animations_enabled,
+                )
+            });
 
         let menu_style = move |theme: &Theme| Style {
             background: Some(theme.palette().background.into()),
@@ -357,7 +356,7 @@ impl App {
             .backdrop(backdrop_color(menu_backdrop))
             .on_click_outside(app::Message::CloseMenu(id))
             .open(!self.outputs.menu_is_closing(id))
-            .animated(use_theme(|t| t.animations_enabled))
+            .animated(animations_enabled)
             .into()
     }
 }

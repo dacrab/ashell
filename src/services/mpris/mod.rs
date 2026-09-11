@@ -1,24 +1,21 @@
+use super::impl_service_subscription;
 use super::{ReadOnlyService, Service, ServiceEvent};
 use dbus::MprisPlayerProxy;
 use iced::{
-    Subscription,
     core::Bytes,
     futures::{
         FutureExt, SinkExt, Stream, StreamExt,
         channel::mpsc::Sender,
         future::{BoxFuture, join_all},
         select,
-        stream::{AbortHandle, Abortable, Aborted, FuturesUnordered, SelectAll, pending},
+        stream::{AbortHandle, Abortable, Aborted, FuturesUnordered, SelectAll},
     },
-    stream::channel,
     widget::image,
 };
 use log::{debug, error, info};
-use std::{
-    any::TypeId,
-    collections::{HashMap, HashSet},
-    fmt::Display,
-};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
+use tokio::time::sleep;
 use url::Url;
 use zbus::{fdo::DBusProxy, zvariant::OwnedValue};
 
@@ -57,18 +54,6 @@ pub struct MprisPlayerMetadata {
     pub title: Option<String>,
     pub album: Option<String>,
     pub art_url: Option<String>,
-}
-
-impl Display for MprisPlayerMetadata {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let t = match (self.artists.clone(), self.title.clone()) {
-            (None, None) => String::new(),
-            (None, Some(t)) => t,
-            (Some(a), None) => a.join(", "),
-            (Some(a), Some(t)) => format!("{} - {}", a.join(", "), t),
-        };
-        write!(f, "{t}")
-    }
 }
 
 impl From<HashMap<String, OwnedValue>> for MprisPlayerMetadata {
@@ -111,7 +96,7 @@ impl MprisPlayerService {
         &self.data
     }
 
-    pub fn get_cover(&self, url: &str) -> Option<&image::Handle> {
+    pub fn cover(&self, url: &str) -> Option<&image::Handle> {
         self.covers.get(url)
     }
 }
@@ -169,17 +154,7 @@ impl ReadOnlyService for MprisPlayerService {
         }
     }
 
-    fn subscribe() -> Subscription<ServiceEvent<Self>> {
-        Subscription::run_with(TypeId::of::<Self>(), |_| {
-            channel(10, async |mut output| {
-                let mut state = State::Init;
-
-                loop {
-                    state = MprisPlayerService::start_listening(state, &mut output).await;
-                }
-            })
-        })
-    }
+    impl_service_subscription!(MprisPlayerService, 10);
 }
 
 const MPRIS_PLAYER_SERVICE_PREFIX: &str = "org.mpris.MediaPlayer2.";
@@ -198,13 +173,13 @@ enum DbusEvent {
 impl MprisPlayerService {
     async fn initialize_data(conn: &zbus::Connection) -> anyhow::Result<Vec<MprisPlayerData>> {
         let dbus = DBusProxy::new(conn).await?;
-        let names = Self::get_player_names(&dbus).await?;
+        let names = Self::player_names(&dbus).await?;
         debug!("Found MPRIS player services: {names:?}");
 
-        Ok(Self::get_mpris_player_data(conn, &names).await)
+        Ok(Self::mpris_player_data(conn, &names).await)
     }
 
-    async fn get_player_names(dbus: &DBusProxy<'_>) -> anyhow::Result<Vec<String>> {
+    async fn player_names(dbus: &DBusProxy<'_>) -> anyhow::Result<Vec<String>> {
         let names: Vec<String> = dbus
             .list_names()
             .await?
@@ -237,17 +212,11 @@ impl MprisPlayerService {
         proxies
     }
 
-    async fn get_mpris_player_data(
-        conn: &zbus::Connection,
-        names: &[String],
-    ) -> Vec<MprisPlayerData> {
+    async fn mpris_player_data(conn: &zbus::Connection, names: &[String]) -> Vec<MprisPlayerData> {
         let proxies = Self::create_proxies(conn, names).await;
 
         join_all(proxies.into_iter().map(|(name, proxy)| async {
-            let metadata = proxy
-                .metadata()
-                .await
-                .map_or(None, |m| Some(MprisPlayerMetadata::from(m)));
+            let metadata = proxy.metadata().await.ok().map(MprisPlayerMetadata::from);
 
             let volume = proxy.volume().await.map(|v| v * 100.0).ok();
             let state = proxy
@@ -256,17 +225,16 @@ impl MprisPlayerService {
                 .map(PlaybackStatus::from)
                 .unwrap_or_default();
 
-            Some(MprisPlayerData {
+            MprisPlayerData {
                 service: name,
                 metadata,
                 volume,
                 state,
                 proxy,
-            })
+            }
         }))
         .await
         .into_iter()
-        .flatten()
         .filter(|player| player.state != PlaybackStatus::Stopped)
         .collect()
     }
@@ -293,7 +261,7 @@ impl MprisPlayerService {
                 .boxed(),
         );
 
-        let proxies = Self::create_proxies(conn, &Self::get_player_names(&dbus).await?).await;
+        let proxies = Self::create_proxies(conn, &Self::player_names(&dbus).await?).await;
 
         for (_, p) in proxies.iter() {
             combined.push(
@@ -347,9 +315,11 @@ impl MprisPlayerService {
             State::Init => Self::init(output).await,
             State::Active(data) => Self::active(output, data).await,
             State::Error => {
-                let _ = pending::<u8>().next().await;
+                error!("MPRIS service error, retrying in 5 seconds");
 
-                State::Error
+                sleep(Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }
@@ -460,7 +430,8 @@ impl MprisPlayerService {
             .filter_map(|p| p.metadata.as_ref()?.art_url.clone())
             .filter(|url| Self::is_valid_art_url(url))
             .collect();
-        // These will be removed in `update()`
+        // Prune the tracking sets to the still-wanted URLs (the service's
+        // `covers` map is pruned in `update()` on `MetadataChanged`).
         state_data
             .fetched_covers
             .retain(|url| desired_urls.contains(url));
@@ -497,17 +468,35 @@ impl MprisPlayerService {
     }
 
     async fn fetch_cover(url: &str) -> anyhow::Result<Bytes> {
+        const MAX_COVER_BYTES: usize = 10 * 1024 * 1024;
+        const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+
         let url = Url::parse(url)?;
         match url.scheme() {
             "http" | "https" => {
-                let response = reqwest::get(url).await?;
-                Ok(response.bytes().await?)
+                let client = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build()?;
+                let response = client.get(url).send().await?;
+                if response
+                    .content_length()
+                    .is_some_and(|len| len as usize > MAX_COVER_BYTES)
+                {
+                    anyhow::bail!("Cover exceeds size cap");
+                }
+                let bytes = response.bytes().await?;
+                if bytes.len() > MAX_COVER_BYTES {
+                    anyhow::bail!("Cover exceeds size cap");
+                }
+                Ok(bytes)
             }
             "file" => {
                 let path = url
                     .to_file_path()
                     .map_err(|_| anyhow::anyhow!("Invalid file URL {}", url))?;
-                Ok(tokio::fs::read(path).await?.into())
+                let bytes = tokio::fs::read(path).await?;
+                if bytes.len() > MAX_COVER_BYTES {
+                    anyhow::bail!("Cover exceeds size cap");
+                }
+                Ok(bytes.into())
             }
             _ => anyhow::bail!("Unsupported URL scheme: {}", url.scheme()),
         }
@@ -567,7 +556,7 @@ impl Service for MprisPlayerService {
                                     .inspect_err(|e| error!("Set volume command error: {e}"));
                             }
                         }
-                        Event::MetadataChanged(Self::get_mpris_player_data(&conn, &names).await)
+                        Event::MetadataChanged(Self::mpris_player_data(&conn, &names).await)
                     },
                     ServiceEvent::Update,
                 )

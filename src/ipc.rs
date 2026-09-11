@@ -13,11 +13,12 @@ use crate::xdg;
 use anyhow::{Context, Result, anyhow};
 use clap::Subcommand;
 use iced::Subscription;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use iced::futures::StreamExt;
 
 /// Maximum bytes to read from a client connection.
-const MAX_REQUEST_LEN: u64 = 4096;
+const MAX_REQUEST_LEN: usize = 4096;
 
 /// IPC command that can be sent to the daemon.
 #[derive(Subcommand, Debug, Clone)]
@@ -68,40 +69,56 @@ pub enum IpcCommand {
 
 impl IpcCommand {
     pub fn no_osd(&self) -> bool {
-        match self {
-            IpcCommand::ToggleVisibility => false,
-            IpcCommand::VolumeUp { no_osd }
-            | IpcCommand::VolumeDown { no_osd }
-            | IpcCommand::VolumeToggleMute { no_osd }
-            | IpcCommand::MicrophoneUp { no_osd }
-            | IpcCommand::MicrophoneDown { no_osd }
-            | IpcCommand::MicrophoneToggleMute { no_osd }
-            | IpcCommand::BrightnessUp { no_osd }
-            | IpcCommand::BrightnessDown { no_osd }
-            | IpcCommand::ToggleAirplaneMode { no_osd }
-            | IpcCommand::ToggleIdleInhibitor { no_osd } => *no_osd,
-        }
+        self.wire().1.unwrap_or(false)
     }
 }
 
 const NO_OSD_SUFFIX: &str = "?no-osd";
 
+impl IpcCommand {
+    /// Single source of truth for the wire name of this command, plus whether
+    /// it carries a `no_osd` flag. Consumed by `Display`, `FromStr` and
+    /// `no_osd` so the name only exists in one place.
+    fn wire(&self) -> (&'static str, Option<bool>) {
+        match self {
+            IpcCommand::ToggleVisibility => ("toggle-visibility", None),
+            IpcCommand::VolumeUp { no_osd } => ("volume-up", Some(*no_osd)),
+            IpcCommand::VolumeDown { no_osd } => ("volume-down", Some(*no_osd)),
+            IpcCommand::VolumeToggleMute { no_osd } => ("volume-toggle-mute", Some(*no_osd)),
+            IpcCommand::MicrophoneUp { no_osd } => ("microphone-up", Some(*no_osd)),
+            IpcCommand::MicrophoneDown { no_osd } => ("microphone-down", Some(*no_osd)),
+            IpcCommand::MicrophoneToggleMute { no_osd } => {
+                ("microphone-toggle-mute", Some(*no_osd))
+            }
+            IpcCommand::BrightnessUp { no_osd } => ("brightness-up", Some(*no_osd)),
+            IpcCommand::BrightnessDown { no_osd } => ("brightness-down", Some(*no_osd)),
+            IpcCommand::ToggleAirplaneMode { no_osd } => ("toggle-airplane-mode", Some(*no_osd)),
+            IpcCommand::ToggleIdleInhibitor { no_osd } => ("toggle-idle-inhibitor", Some(*no_osd)),
+        }
+    }
+
+    /// Parse a base wire name (without the `?no-osd` suffix).
+    fn from_wire(name: &str, no_osd: bool) -> Option<Self> {
+        Some(match name {
+            "toggle-visibility" => IpcCommand::ToggleVisibility,
+            "volume-up" => IpcCommand::VolumeUp { no_osd },
+            "volume-down" => IpcCommand::VolumeDown { no_osd },
+            "volume-toggle-mute" => IpcCommand::VolumeToggleMute { no_osd },
+            "microphone-up" => IpcCommand::MicrophoneUp { no_osd },
+            "microphone-down" => IpcCommand::MicrophoneDown { no_osd },
+            "microphone-toggle-mute" => IpcCommand::MicrophoneToggleMute { no_osd },
+            "brightness-up" => IpcCommand::BrightnessUp { no_osd },
+            "brightness-down" => IpcCommand::BrightnessDown { no_osd },
+            "toggle-airplane-mode" => IpcCommand::ToggleAirplaneMode { no_osd },
+            "toggle-idle-inhibitor" => IpcCommand::ToggleIdleInhibitor { no_osd },
+            _ => return None,
+        })
+    }
+}
+
 impl fmt::Display for IpcCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let base = match self {
-            IpcCommand::ToggleVisibility => "toggle-visibility",
-            IpcCommand::VolumeUp { .. } => "volume-up",
-            IpcCommand::VolumeDown { .. } => "volume-down",
-            IpcCommand::VolumeToggleMute { .. } => "volume-toggle-mute",
-            IpcCommand::MicrophoneUp { .. } => "microphone-up",
-            IpcCommand::MicrophoneDown { .. } => "microphone-down",
-            IpcCommand::MicrophoneToggleMute { .. } => "microphone-toggle-mute",
-            IpcCommand::BrightnessUp { .. } => "brightness-up",
-            IpcCommand::BrightnessDown { .. } => "brightness-down",
-            IpcCommand::ToggleAirplaneMode { .. } => "toggle-airplane-mode",
-            IpcCommand::ToggleIdleInhibitor { .. } => "toggle-idle-inhibitor",
-        };
-        write!(f, "{base}")?;
+        write!(f, "{}", self.wire().0)?;
         if self.no_osd() {
             write!(f, "{NO_OSD_SUFFIX}")?;
         }
@@ -117,26 +134,13 @@ impl FromStr for IpcCommand {
             Some(base) => (base, true),
             None => (s, false),
         };
-        match cmd {
-            "toggle-visibility" => Ok(IpcCommand::ToggleVisibility),
-            "volume-up" => Ok(IpcCommand::VolumeUp { no_osd }),
-            "volume-down" => Ok(IpcCommand::VolumeDown { no_osd }),
-            "volume-toggle-mute" => Ok(IpcCommand::VolumeToggleMute { no_osd }),
-            "microphone-up" => Ok(IpcCommand::MicrophoneUp { no_osd }),
-            "microphone-down" => Ok(IpcCommand::MicrophoneDown { no_osd }),
-            "microphone-toggle-mute" => Ok(IpcCommand::MicrophoneToggleMute { no_osd }),
-            "brightness-up" => Ok(IpcCommand::BrightnessUp { no_osd }),
-            "brightness-down" => Ok(IpcCommand::BrightnessDown { no_osd }),
-            "toggle-airplane-mode" => Ok(IpcCommand::ToggleAirplaneMode { no_osd }),
-            "toggle-idle-inhibitor" => Ok(IpcCommand::ToggleIdleInhibitor { no_osd }),
-            _ => Err(anyhow!("unknown IPC command: {s:?}")),
-        }
+        Self::from_wire(cmd, no_osd).ok_or_else(|| anyhow!("unknown IPC command: {s:?}"))
     }
 }
 
 pub fn socket_path() -> PathBuf {
     let uid = unsafe { libc::getuid() };
-    match xdg::get_runtime_dir() {
+    match xdg::runtime_dir() {
         Some(dir) => [dir, PathBuf::from("ashell.sock")],
         None => [
             std::env::temp_dir(),
@@ -163,7 +167,7 @@ pub fn run_client(cmd: &IpcCommand) -> Result<()> {
     stream.shutdown(std::net::Shutdown::Write)?;
 
     let mut response = String::new();
-    BufReader::new((&stream).take(MAX_REQUEST_LEN))
+    BufReader::new((&stream).take(MAX_REQUEST_LEN as u64))
         .read_line(&mut response)
         .context("read response")?;
     let response = response.trim_end();
@@ -229,31 +233,53 @@ fn create_listener() -> std::result::Result<UnixListener, ListenerError> {
 }
 
 /// Read a single command from an accepted client connection.
-fn read_request(stream: &UnixStream) -> Result<IpcCommand> {
-    let mut line = String::new();
-    BufReader::new(stream.take(MAX_REQUEST_LEN))
-        .read_line(&mut line)
-        .context("read IPC command")?;
+async fn read_request(stream: &mut tokio::net::UnixStream) -> Result<IpcCommand> {
+    // Read up to MAX_REQUEST_LEN + 1 bytes: one extra to detect oversized
+    // requests while bounding memory.
+    let mut buf = vec![0; MAX_REQUEST_LEN + 1];
+    let mut total = 0;
+    let mut newline = None;
+    while newline.is_none() && total <= MAX_REQUEST_LEN {
+        let n = stream
+            .read(&mut buf[total..])
+            .await
+            .context("read IPC command")?;
+        if n == 0 {
+            break;
+        }
+        if let Some(pos) = buf[total..total + n].iter().position(|&b| b == b'\n') {
+            newline = Some(total + pos);
+        }
+        total += n;
+    }
+    let end = match newline {
+        Some(pos) => pos,
+        None if total > MAX_REQUEST_LEN => {
+            anyhow::bail!("request exceeds {} bytes", MAX_REQUEST_LEN);
+        }
+        None => total,
+    };
+    let line = String::from_utf8_lossy(&buf[..end]);
     line.trim().parse()
 }
 
 /// Write a response line to the client.
-fn write_response(stream: &mut UnixStream, response: &str) {
+async fn write_response(stream: &mut tokio::net::UnixStream, response: &str) {
     let msg = format!("{response}\n");
-    if let Err(e) = stream.write_all(msg.as_bytes()) {
+    if let Err(e) = stream.write_all(msg.as_bytes()).await {
         log::debug!("IPC write response failed: {e}");
     }
 }
 
 /// Handle a single accepted client connection.
-fn handle_connection(mut stream: UnixStream) -> Option<IpcCommand> {
-    match read_request(&stream) {
+async fn handle_connection(mut stream: tokio::net::UnixStream) -> Option<IpcCommand> {
+    match read_request(&mut stream).await {
         Ok(cmd) => {
-            write_response(&mut stream, "ok");
+            write_response(&mut stream, "ok").await;
             Some(cmd)
         }
         Err(e) => {
-            write_response(&mut stream, &format!("error {e:#}"));
+            write_response(&mut stream, &format!("error {e:#}")).await;
             None
         }
     }
@@ -291,16 +317,7 @@ pub fn subscription() -> Subscription<IpcCommand> {
                 None => init_listener()?,
             };
             let (request, listener) = match listener.accept().await {
-                Ok((stream, _)) => {
-                    let request = match stream.into_std() {
-                        Ok(std_stream) => handle_connection(std_stream),
-                        Err(e) => {
-                            log::error!("IPC stream conversion error: {e}");
-                            None
-                        }
-                    };
-                    (request, listener)
-                }
+                Ok((stream, _)) => (handle_connection(stream).await, listener),
                 Err(e) => {
                     log::error!("IPC accept error: {e}");
                     (None, listener)

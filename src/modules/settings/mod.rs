@@ -13,7 +13,9 @@ use crate::{
         menu::MenuType,
         password_dialog, position_button, quick_setting_button, sub_menu_wrapper,
     },
-    config::{Position, SettingsCustomButton, SettingsIndicator, SettingsModuleConfig},
+    config::{
+        Position, SettingsCustomButton, SettingsFormat, SettingsIndicator, SettingsModuleConfig,
+    },
     modules::settings::{
         audio::{AudioSettings, AudioSettingsConfig},
         bluetooth::{BluetoothSettings, BluetoothSettingsConfig},
@@ -200,40 +202,60 @@ impl Settings {
         Action::None
     }
 
-    pub fn new(config: SettingsModuleConfig) -> Self {
-        Settings {
-            lock_cmd: config.lock_cmd,
-            power: PowerSettings::new(PowerSettingsConfig::new(
-                config.suspend_cmd,
-                config.hibernate_cmd,
-                config.reboot_cmd,
-                config.shutdown_cmd,
-                config.logout_cmd,
+    fn build_sub_configs(
+        config: &SettingsModuleConfig,
+    ) -> (
+        PowerSettingsConfig,
+        AudioSettingsConfig,
+        SettingsFormat,
+        NetworkSettingsConfig,
+        BluetoothSettingsConfig,
+    ) {
+        (
+            PowerSettingsConfig::new(
+                config.suspend_cmd.clone(),
+                config.hibernate_cmd.clone(),
+                config.reboot_cmd.clone(),
+                config.shutdown_cmd.clone(),
+                config.logout_cmd.clone(),
                 config.battery_format,
                 config.battery_hide_when_full,
-                config.peripheral_indicators,
+                config.peripheral_indicators.clone(),
                 config.peripheral_battery_format,
                 config.peripheral_expanded_by_default,
-            )),
-            audio: AudioSettings::new(AudioSettingsConfig::new(
-                config.audio_sinks_more_cmd,
-                config.audio_sources_more_cmd,
+            ),
+            AudioSettingsConfig::new(
+                config.audio_sinks_more_cmd.clone(),
+                config.audio_sources_more_cmd.clone(),
                 config.volume_step,
                 config.max_volume,
                 config.audio_indicator_format,
                 config.microphone_indicator_format,
-            )),
-            brightness: BrightnessSettings::new(config.brightness_indicator_format),
-            network: NetworkSettings::new(NetworkSettingsConfig::new(
-                config.wifi_more_cmd,
-                config.vpn_more_cmd,
+            ),
+            config.brightness_indicator_format,
+            NetworkSettingsConfig::new(
+                config.wifi_more_cmd.clone(),
+                config.vpn_more_cmd.clone(),
                 config.remove_airplane_btn,
                 config.network_indicator_format,
-            )),
-            bluetooth: BluetoothSettings::new(BluetoothSettingsConfig::new(
-                config.bluetooth_more_cmd,
+            ),
+            BluetoothSettingsConfig::new(
+                config.bluetooth_more_cmd.clone(),
                 config.bluetooth_indicator_format,
-            )),
+            ),
+        )
+    }
+
+    pub fn new(config: SettingsModuleConfig) -> Self {
+        let (power_config, audio_config, brightness_config, network_config, bluetooth_config) =
+            Self::build_sub_configs(&config);
+        Settings {
+            lock_cmd: config.lock_cmd,
+            power: PowerSettings::new(power_config),
+            audio: AudioSettings::new(audio_config),
+            brightness: BrightnessSettings::new(brightness_config),
+            network: NetworkSettings::new(network_config),
+            bluetooth: BluetoothSettings::new(bluetooth_config),
             idle_inhibitor: if config.remove_idle_btn {
                 None
             } else {
@@ -312,7 +334,7 @@ impl Settings {
                     Action::None
                 }
                 network::Action::Command(task) => Action::Command(task.map(Message::Network)),
-                network::Action::ToggleWifiMenu => {
+                network::Action::ToggleWiFiMenu => {
                     self.toggle_submenu_to(SubMenu::Wifi);
                     Action::None
                 }
@@ -350,7 +372,7 @@ impl Settings {
             Message::ToggleSubMenu(menu_type) => {
                 self.toggle_submenu_to(menu_type);
                 if self.sub_menu == Some(menu_type) && menu_type == SubMenu::Wifi {
-                    match self.network.update(network::Message::WifiMenuOpened) {
+                    match self.network.update(network::Message::WiFiMenuOpened) {
                         network::Action::Command(task) => {
                             Action::Command(task.map(Message::Network))
                         }
@@ -360,12 +382,7 @@ impl Settings {
                     Action::None
                 }
             }
-            Message::ToggleInhibitIdle => {
-                if let Some(idle_inhibitor) = &mut self.idle_inhibitor {
-                    idle_inhibitor.toggle();
-                }
-                Action::None
-            }
+            Message::ToggleInhibitIdle => self.toggle_idle_inhibitor(),
             Message::Lock => {
                 if let Some(lock_cmd) = &self.lock_cmd {
                     crate::utils::launcher::execute_command(lock_cmd);
@@ -438,7 +455,7 @@ impl Settings {
                 self.network_dialog = None;
                 self.network_dialog_show_password = false;
 
-                self.sub_menu = if self.power.config.peripheral_expanded_by_default {
+                self.sub_menu = if self.power.peripheral_expanded_by_default() {
                     Some(SubMenu::PeripheralMenu)
                 } else {
                     None
@@ -500,47 +517,25 @@ impl Settings {
                 Action::Command(custom_buttons_task)
             }
             Message::ConfigReloaded(config) => {
+                let (
+                    power_config,
+                    audio_config,
+                    brightness_config,
+                    network_config,
+                    bluetooth_config,
+                ) = Self::build_sub_configs(&config);
                 self.enable_tooltips = config.enable_tooltips;
                 self.lock_cmd = config.lock_cmd;
                 self.power
-                    .update(power::Message::ConfigReloaded(PowerSettingsConfig::new(
-                        config.suspend_cmd,
-                        config.hibernate_cmd,
-                        config.reboot_cmd,
-                        config.shutdown_cmd,
-                        config.logout_cmd,
-                        config.battery_format,
-                        config.battery_hide_when_full,
-                        config.peripheral_indicators,
-                        config.peripheral_battery_format,
-                        config.peripheral_expanded_by_default,
-                    )));
+                    .update(power::Message::ConfigReloaded(power_config));
                 self.audio
-                    .update(audio::Message::ConfigReloaded(AudioSettingsConfig::new(
-                        config.audio_sinks_more_cmd,
-                        config.audio_sources_more_cmd,
-                        config.volume_step,
-                        config.max_volume,
-                        config.audio_indicator_format,
-                        config.microphone_indicator_format,
-                    )));
-                self.network.update(network::Message::ConfigReloaded(
-                    NetworkSettingsConfig::new(
-                        config.wifi_more_cmd,
-                        config.vpn_more_cmd,
-                        config.remove_airplane_btn,
-                        config.network_indicator_format,
-                    ),
-                ));
-                self.bluetooth.update(bluetooth::Message::ConfigReloaded(
-                    BluetoothSettingsConfig::new(
-                        config.bluetooth_more_cmd,
-                        config.bluetooth_indicator_format,
-                    ),
-                ));
-                self.brightness.update(brightness::Message::ConfigReloaded(
-                    config.brightness_indicator_format,
-                ));
+                    .update(audio::Message::ConfigReloaded(audio_config));
+                self.network
+                    .update(network::Message::ConfigReloaded(network_config));
+                self.bluetooth
+                    .update(bluetooth::Message::ConfigReloaded(bluetooth_config));
+                self.brightness
+                    .update(brightness::Message::ConfigReloaded(brightness_config));
                 if config.remove_idle_btn {
                     self.idle_inhibitor = None;
                 } else if self.idle_inhibitor.is_none() {

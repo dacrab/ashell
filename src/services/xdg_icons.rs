@@ -70,7 +70,7 @@ pub async fn warm_cache_async() {
     let _ = tokio::task::spawn_blocking(warm_cache).await;
 }
 
-pub fn get_icon_from_name(icon_name: &str) -> Option<XdgIcon> {
+pub fn icon_from_name(icon_name: &str) -> Option<XdgIcon> {
     if icon_name.is_empty() {
         return None;
     }
@@ -150,7 +150,7 @@ fn icon_from_path(path: PathBuf) -> Option<XdgIcon> {
     }
 }
 
-fn find_icon_path(icon_name: &str) -> Option<PathBuf> {
+pub(crate) fn find_icon_path(icon_name: &str) -> Option<PathBuf> {
     let base_lookup = lookup(icon_name).with_cache();
 
     match get_icon_theme() {

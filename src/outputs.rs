@@ -1,3 +1,8 @@
+//! Multi-output layer-surface management. Each configured output owns a bar
+//! surface plus its menu surface; toast and OSD are single overlay surfaces
+//! mapped to whichever output the compositor places them on. `sync`
+//! reconciles live surfaces with a config change (or a resume from sleep).
+
 use iced::{
     Anchor, InputRegionRect, KeyboardInteractivity, Layer, LayerShellSettings, OutputId, SurfaceId,
     Task, destroy_layer_surface, new_layer_surface, set_anchor, set_exclusive_zone,
@@ -6,7 +11,7 @@ use iced::{
 use log::debug;
 
 use crate::{
-    HEIGHT,
+    HEIGHT, SOLID_BAR_INSET,
     components::ButtonUIRef,
     components::menu::{Menu, MenuType, OpenMenu},
     config::{self, BarSurface, Position},
@@ -26,6 +31,25 @@ pub struct ShellInfo {
 }
 
 impl ShellInfo {
+    fn new(
+        id: SurfaceId,
+        menu: Menu,
+        position: Position,
+        layer: config::Layer,
+        layout: BarLayout,
+        scale_factor: f64,
+    ) -> Self {
+        Self {
+            id,
+            menu,
+            position,
+            layer,
+            layout,
+            scale_factor,
+            output_logical_height: None,
+        }
+    }
+
     fn destroy_surfaces<Message: 'static>(self) -> Task<Message> {
         let mut tasks = vec![destroy_layer_surface(self.id)];
         if let Some(menu_id) = self.menu.surface_id() {
@@ -130,15 +154,14 @@ impl Outputs {
                     name: "Fallback".to_string(),
                     description: String::new(),
                 },
-                Some(ShellInfo {
-                    id: SurfaceId::MAIN,
-                    menu: Menu::new(),
+                Some(ShellInfo::new(
+                    SurfaceId::MAIN,
+                    Menu::new(),
                     position,
                     layer,
                     layout,
                     scale_factor,
-                    output_logical_height: None,
-                }),
+                )),
                 None,
             )],
             toast: None,
@@ -153,10 +176,44 @@ impl Outputs {
         Menu::with_animations(self.animations_enabled)
     }
 
-    pub fn get_height(surface: BarSurface, scale_factor: f64) -> f64 {
+    fn push_fallback(
+        &mut self,
+        id: SurfaceId,
+        layout: BarLayout,
+        position: Position,
+        layer: config::Layer,
+        scale_factor: f64,
+    ) {
+        let menu = self.make_menu();
+        self.entries.push((
+            OutputKey {
+                name: "Fallback".to_string(),
+                description: String::new(),
+            },
+            Some(ShellInfo::new(
+                id,
+                menu,
+                position,
+                layer,
+                layout,
+                scale_factor,
+            )),
+            None,
+        ));
+    }
+
+    fn take_entry<Message: 'static>(&mut self, index: usize) -> Task<Message> {
+        let (_, shell_info, _) = self.entries.swap_remove(index);
+        match shell_info {
+            Some(shell_info) => shell_info.destroy_surfaces(),
+            _ => Task::none(),
+        }
+    }
+
+    pub fn height(surface: BarSurface, scale_factor: f64) -> f64 {
         (HEIGHT
             - match surface {
-                BarSurface::Solid => 8.,
+                BarSurface::Solid => SOLID_BAR_INSET,
                 BarSurface::Transparent => 0.,
             })
             * scale_factor
@@ -173,7 +230,7 @@ impl Outputs {
     /// Space reserved on the anchored edge: the bar height plus the margin that
     /// pushes the bar away from that edge.
     pub fn exclusive_zone(layout: BarLayout, position: Position, scale_factor: f64) -> i32 {
-        let height = Self::get_height(layout.surface, scale_factor);
+        let height = Self::height(layout.surface, scale_factor);
         let (top, _, bottom, _) = Self::margin(layout, scale_factor);
         height as i32
             + match position {
@@ -189,7 +246,7 @@ impl Outputs {
         layer: config::Layer,
         scale_factor: f64,
     ) -> (SurfaceId, Task<Message>) {
-        let height = Self::get_height(layout.surface, scale_factor);
+        let height = Self::height(layout.surface, scale_factor);
 
         let iced_layer = match layer {
             config::Layer::Top => Layer::Top,
@@ -257,7 +314,7 @@ impl Outputs {
 
     /// Returns the canonical short name (e.g. `eDP-1`) — used by the
     /// workspace visibility filter which compares against `w.monitor`.
-    pub fn get_monitor_name(&self, id: SurfaceId) -> Option<&str> {
+    pub fn monitor_name(&self, id: SurfaceId) -> Option<&str> {
         self.entries.iter().find_map(|(key, info, _)| {
             info.as_ref().and_then(|info| {
                 if info.id == id {
@@ -310,14 +367,7 @@ impl Outputs {
                 .iter()
                 .position(|(key, _, _)| key.name.as_str() == name)
             {
-                Some(index) => {
-                    let old_output = self.entries.swap_remove(index);
-
-                    match old_output.1 {
-                        Some(shell_info) => shell_info.destroy_surfaces(),
-                        _ => Task::none(),
-                    }
-                }
+                Some(index) => self.take_entry(index),
                 _ => Task::none(),
             };
 
@@ -327,15 +377,14 @@ impl Outputs {
                     name: name.to_owned(),
                     description: description.to_owned(),
                 },
-                Some(ShellInfo {
+                Some(ShellInfo::new(
                     id,
                     menu,
                     position,
                     layer,
                     layout,
                     scale_factor,
-                    output_logical_height: None,
-                }),
+                )),
                 Some(output_id),
             ));
 
@@ -345,14 +394,7 @@ impl Outputs {
                 .iter()
                 .position(|(_, _, output)| output.is_none())
             {
-                Some(index) => {
-                    let old_output = self.entries.swap_remove(index);
-
-                    match old_output.1 {
-                        Some(shell_info) => shell_info.destroy_surfaces(),
-                        _ => Task::none(),
-                    }
-                }
+                Some(index) => self.take_entry(index),
                 _ => Task::none(),
             };
 
@@ -392,13 +434,7 @@ impl Outputs {
             Some(index_to_remove) => {
                 debug!("Removing layer surface for output");
 
-                let (_name, shell_info, _output_id) = self.entries.swap_remove(index_to_remove);
-
-                let destroy_task = if let Some(shell_info) = shell_info {
-                    shell_info.destroy_surfaces()
-                } else {
-                    Task::none()
-                };
+                let destroy_task = self.take_entry(index_to_remove);
 
                 // Drop the entry entirely instead of keeping a (name, None, stale_id) marker:
                 // on resume, sync() would otherwise treat it as "needs re-add" and call add()
@@ -418,23 +454,7 @@ impl Outputs {
                     let (id, task) =
                         Self::create_output_layers(layout, None, position, layer, scale_factor);
 
-                    let menu = self.make_menu();
-                    self.entries.push((
-                        OutputKey {
-                            name: "Fallback".to_string(),
-                            description: String::new(),
-                        },
-                        Some(ShellInfo {
-                            id,
-                            menu,
-                            position,
-                            layer,
-                            layout,
-                            scale_factor,
-                            output_logical_height: None,
-                        }),
-                        None,
-                    ));
+                    self.push_fallback(id, layout, position, layer, scale_factor);
 
                     Task::batch(vec![destroy_task, task])
                 }
@@ -564,7 +584,7 @@ impl Outputs {
             );
             shell_info.layout = layout;
             shell_info.scale_factor = scale_factor;
-            let height = Self::get_height(layout.surface, scale_factor);
+            let height = Self::height(layout.surface, scale_factor);
             tasks.push(Task::batch(vec![
                 set_size(shell_info.id, (0, height as u32)),
                 set_exclusive_zone(
@@ -679,6 +699,11 @@ impl Outputs {
             _ => Task::none(),
         };
 
+        // `request_keyboard` is `enable_esc_key`: OnDemand is what lets the
+        // Escape listener in `App::subscription` receive the keypress while a
+        // menu is open; None keeps the bar non-interactive otherwise. (The
+        // password dialog goes further and grabs Exclusive — see
+        // `Menu::request_keyboard`.)
         if request_keyboard {
             if self.menu_is_open() {
                 Task::batch(vec![
@@ -869,7 +894,7 @@ impl Outputs {
             if *oid == Some(target) {
                 info.as_ref().and_then(|i| {
                     i.output_logical_height.map(|h| {
-                        let bar = Self::get_height(i.layout.surface, i.scale_factor) as u32;
+                        let bar = Self::height(i.layout.surface, i.scale_factor) as u32;
                         h.saturating_sub(bar)
                     })
                 })

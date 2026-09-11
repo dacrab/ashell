@@ -1,3 +1,4 @@
+use crate::components::ANIMATION_DURATION;
 use iced::{
     Animation, Length, Rectangle, Size, Vector,
     animation::Easing,
@@ -234,7 +235,7 @@ where
 {
     AnimatedSize {
         content: content.into(),
-        duration: Duration::from_millis(100),
+        duration: ANIMATION_DURATION,
         easing: Easing::EaseOutCubic,
     }
 }

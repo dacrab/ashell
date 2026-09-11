@@ -21,35 +21,8 @@ use log::{info, warn};
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, System};
 
-const MAX_IP_LEN: usize = 45;
-
-#[derive(Clone, Copy)]
-struct FixedIp([u8; MAX_IP_LEN], usize);
-
-impl FixedIp {
-    fn from_str(s: &str) -> Option<Self> {
-        if s.len() < MAX_IP_LEN {
-            let mut arr = [0u8; MAX_IP_LEN];
-            arr[..s.len()].copy_from_slice(s.as_bytes());
-            Some(Self(arr, s.len()))
-        } else {
-            None
-        }
-    }
-}
-
-impl std::fmt::Display for FixedIp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            std::str::from_utf8(&self.0[..self.1]).unwrap_or("")
-        )
-    }
-}
-
 struct NetworkData {
-    ip: FixedIp,
+    ip: std::net::IpAddr,
     download_speed: u32,
     upload_speed: u32,
     last_check: Instant,
@@ -65,10 +38,6 @@ struct CpuUsage {
     frequency: f32,
 }
 
-struct Temperature {
-    celsius: Option<i32>,
-}
-
 struct DiskView {
     percentage: u32,
     fraction: String,
@@ -78,7 +47,7 @@ struct SystemInfoData {
     cpu_usage: CpuUsage,
     memory_usage: MemoryUsage,
     memory_swap_usage: MemoryUsage,
-    temperature: Temperature,
+    temperature: Option<i32>,
     disks: Vec<(String, DiskView)>,
     network: Option<NetworkData>,
 }
@@ -100,29 +69,18 @@ fn find_sensor(components: &Components, matches: &[SensorMatch]) -> Option<Strin
     for m in matches {
         let result = match m {
             SensorMatch::Exact(labels) => find_first_sensor_label(labels, components),
-            SensorMatch::StartsWith(prefixes) => {
-                let mut result = None;
-                for &prefix in *prefixes {
-                    if let Some(c) = components.iter().find(|c| c.label().starts_with(prefix)) {
-                        result = Some(c.label().to_string());
-                        break;
-                    }
-                }
-                result
-            }
-            SensorMatch::Contains(substrs) => {
-                let mut result = None;
-                for &substr in *substrs {
-                    if let Some(c) = components
-                        .iter()
-                        .find(|c| c.label().to_lowercase().contains(substr))
-                    {
-                        result = Some(c.label().to_string());
-                        break;
-                    }
-                }
-                result
-            }
+            SensorMatch::StartsWith(prefixes) => prefixes.iter().find_map(|prefix| {
+                components
+                    .iter()
+                    .find(|c| c.label().starts_with(prefix))
+                    .map(|c| c.label().to_string())
+            }),
+            SensorMatch::Contains(substrs) => substrs.iter().find_map(|substr| {
+                components
+                    .iter()
+                    .find(|c| c.label().to_lowercase().contains(*substr))
+                    .map(|c| c.label().to_string())
+            }),
         };
         if result.is_some() {
             return result;
@@ -281,9 +239,7 @@ fn get_system_info(
         reading
     };
 
-    let temperature = Temperature {
-        celsius: temperature_cel,
-    };
+    let temperature = temperature_cel;
 
     let disks: Vec<(String, DiskView)> = disks
         .iter()
@@ -372,14 +328,11 @@ fn get_system_info(
         memory_swap_usage,
         temperature,
         disks,
-        network: network.0.and_then(|ip| {
-            let ip_str = ip.to_string();
-            FixedIp::from_str(&ip_str).map(|ip| NetworkData {
-                ip,
-                download_speed: network_speed(network.1),
-                upload_speed: network_speed(network.2),
-                last_check: Instant::now(),
-            })
+        network: network.0.map(|ip| NetworkData {
+            ip,
+            download_speed: network_speed(network.1),
+            upload_speed: network_speed(network.2),
+            last_check: Instant::now(),
         }),
     }
 }
@@ -413,6 +366,25 @@ pub struct SystemInfo {
 }
 
 impl SystemInfo {
+    /// Format a KiB/s speed value for display, switching to MB/s above 1000.
+    fn format_speed(speed_kib: u32) -> String {
+        if speed_kib > 1000 {
+            format!("{} MB/s", speed_kib / 1000)
+        } else {
+            format!("{} KB/s", speed_kib)
+        }
+    }
+
+    /// Same as [`format_speed`] but returning the value and unit separately,
+    /// for the compact bar indicator.
+    fn speed_value_and_unit(speed_kib: u32) -> (u32, &'static str) {
+        if speed_kib > 1000 {
+            (speed_kib / 1000, "MB/s")
+        } else {
+            (speed_kib, "KB/s")
+        }
+    }
+
     pub fn new(config: SystemInfoModuleConfig) -> Self {
         let mut system = System::new();
         let mut components = Components::new_with_refreshed_list();
@@ -566,7 +538,7 @@ impl SystemInfo {
                                 format!("{} GiB", self.data.memory_swap_usage.fraction),
                         }
                     ))
-                    .push(self.data.temperature.celsius.map(|cel| {
+                    .push(self.data.temperature.map(|cel| {
                         Self::info_element(StaticIcon::Temp, t!("system-info-temperature"), {
                             let units = self.config.temperature.resolved_units();
                             format!("{}{}", units.convert_celsius(cel), units.symbol())
@@ -605,20 +577,12 @@ impl SystemInfo {
                             Self::info_element(
                                 StaticIcon::DownloadSpeed,
                                 t!("system-info-download-speed"),
-                                if network.download_speed > 1000 {
-                                    format!("{} MB/s", network.download_speed / 1000)
-                                } else {
-                                    format!("{} KB/s", network.download_speed)
-                                },
+                                Self::format_speed(network.download_speed),
                             ),
                             Self::info_element(
                                 StaticIcon::UploadSpeed,
                                 t!("system-info-upload-speed"),
-                                if network.upload_speed > 1000 {
-                                    format!("{} MB/s", network.upload_speed / 1000)
-                                } else {
-                                    format!("{} KB/s", network.upload_speed)
-                                },
+                                Self::format_speed(network.upload_speed),
                             ),
                         ])
                     }))
@@ -682,7 +646,7 @@ impl SystemInfo {
                 Some(t!("system-info-swap-indicator-prefix")),
             )),
 
-            SystemInfoIndicator::Temperature => self.data.temperature.celsius.map(|cel| {
+            SystemInfoIndicator::Temperature => self.data.temperature.map(|cel| {
                 let units = self.config.temperature.resolved_units();
                 let value = units.convert_celsius(cel);
                 Self::indicator_info_element(
@@ -728,18 +692,7 @@ impl SystemInfo {
             SystemInfoIndicator::DownloadSpeed => self.data.network.as_ref().map(|network| {
                 Self::indicator_info_element(
                     StaticIcon::DownloadSpeed,
-                    (
-                        if network.download_speed > 1000 {
-                            network.download_speed / 1000
-                        } else {
-                            network.download_speed
-                        },
-                        if network.download_speed > 1000 {
-                            "MB/s"
-                        } else {
-                            "KB/s"
-                        },
-                    ),
+                    Self::speed_value_and_unit(network.download_speed),
                     None::<(u32, u32, u32)>,
                     None,
                 )
@@ -747,18 +700,7 @@ impl SystemInfo {
             SystemInfoIndicator::UploadSpeed => self.data.network.as_ref().map(|network| {
                 Self::indicator_info_element(
                     StaticIcon::UploadSpeed,
-                    (
-                        if network.upload_speed > 1000 {
-                            network.upload_speed / 1000
-                        } else {
-                            network.upload_speed
-                        },
-                        if network.upload_speed > 1000 {
-                            "MB/s"
-                        } else {
-                            "KB/s"
-                        },
-                    ),
+                    Self::speed_value_and_unit(network.upload_speed),
                     None::<(u32, u32, u32)>,
                     None,
                 )

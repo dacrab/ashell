@@ -1,13 +1,12 @@
+use super::impl_service_subscription;
 use super::{ReadOnlyService, Service, ServiceEvent};
 use crate::{services::throttle::ThrottleExt, utils::remote_value::Remote};
 use iced::{
-    Subscription, Task,
-    futures::{SinkExt, StreamExt, channel::mpsc::Sender, stream::pending},
-    stream::channel,
+    Task,
+    futures::{SinkExt, StreamExt, channel::mpsc::Sender},
 };
 use log::{debug, error, info, warn};
 use std::{
-    any::TypeId,
     fs,
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
@@ -16,6 +15,7 @@ use std::{
 use tokio::{
     io::{Interest, unix::AsyncFd},
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    time::sleep,
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use zbus::proxy;
@@ -48,22 +48,22 @@ impl DerefMut for BrightnessService {
 }
 
 impl BrightnessService {
-    async fn get_max_brightness(device_path: &Path) -> anyhow::Result<u32> {
+    async fn max_brightness(device_path: &Path) -> anyhow::Result<u32> {
         let max_brightness = fs::read_to_string(device_path.join("max_brightness"))?;
         let max_brightness = max_brightness.trim().parse::<u32>()?;
 
         Ok(max_brightness)
     }
 
-    async fn get_brightness(device_path: &Path) -> anyhow::Result<u32> {
+    async fn brightness(device_path: &Path) -> anyhow::Result<u32> {
         let brightness = fs::read_to_string(device_path.join("brightness"))?;
         let brightness = brightness.trim().parse::<u32>()?;
         Ok(brightness)
     }
 
     async fn initialize_data(device_path: &Path) -> anyhow::Result<BrightnessData> {
-        let max_brightness = Self::get_max_brightness(device_path).await?;
-        let actual_brightness = Self::get_brightness(device_path).await?;
+        let max_brightness = Self::max_brightness(device_path).await?;
+        let actual_brightness = Self::brightness(device_path).await?;
         Ok(BrightnessData {
             current: Remote::new(actual_brightness),
             max: max_brightness,
@@ -164,8 +164,7 @@ impl BrightnessService {
             },
             State::Active(device_path) => {
                 info!("Listening for brightness events");
-                let mut current_value =
-                    Self::get_brightness(&device_path).await.unwrap_or_default();
+                let mut current_value = Self::brightness(&device_path).await.unwrap_or_default();
 
                 match BrightnessService::backlight_monitor_listener().await {
                     Ok(mut socket) => {
@@ -187,7 +186,7 @@ impl BrightnessService {
                                                         evt.syspath()
                                                     );
                                                     if let Ok(new_value) =
-                                                        Self::get_brightness(&device_path).await
+                                                        Self::brightness(&device_path).await
                                                         && new_value != current_value
                                                     {
                                                         current_value = new_value;
@@ -202,7 +201,7 @@ impl BrightnessService {
                                                 }
                                                 _ => {
                                                     debug!(
-                                                        "Unhadled event type: {:?}",
+                                                        "Unhandled event type: {:?}",
                                                         evt.event_type()
                                                     );
                                                 }
@@ -227,10 +226,11 @@ impl BrightnessService {
                 }
             }
             State::Error => {
-                error!("Brightness service error");
+                error!("Brightness service error, retrying in 5 seconds");
 
-                let _ = pending::<u8>().next().await;
-                State::Error
+                sleep(Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }
@@ -272,17 +272,7 @@ impl ReadOnlyService for BrightnessService {
         self.data.current.receive(event.0);
     }
 
-    fn subscribe() -> Subscription<ServiceEvent<Self>> {
-        Subscription::run_with(TypeId::of::<Self>(), |_| {
-            channel(100, async |mut output| {
-                let mut state = State::Init;
-
-                loop {
-                    state = BrightnessService::start_listening(state, &mut output).await;
-                }
-            })
-        })
-    }
+    impl_service_subscription!(BrightnessService, 100);
 }
 
 #[derive(Debug, Clone)]

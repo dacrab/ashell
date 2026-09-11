@@ -15,18 +15,29 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{RwLock, broadcast};
 
+use tokio::sync::OnceCell;
+
 /// Detect whether Hyprland is using Lua or hyprlang config.
 /// Checks `hyprctl status` for the `configProvider` field.
 /// Falls back to hyprlang (false) if detection fails.
+///
+/// The result is cached for the process lifetime: the config flavor only
+/// changes across a Hyprland restart (which restarts ashell's listener too),
+/// and this runs on every compositor command.
 async fn is_lua_config() -> bool {
-    tokio::process::Command::new("hyprctl")
-        .arg("status")
-        .output()
+    static CACHED: OnceCell<bool> = OnceCell::const_new();
+    *CACHED
+        .get_or_init(|| async {
+            tokio::process::Command::new("hyprctl")
+                .arg("status")
+                .output()
+                .await
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.lines().any(|l| l.starts_with("configProvider: lua")))
+                .unwrap_or(false)
+        })
         .await
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.lines().any(|l| l.starts_with("configProvider: lua")))
-        .unwrap_or(false)
 }
 
 /// Dispatch a command using the old hyprlang socket protocol.
@@ -62,6 +73,7 @@ async fn dispatch_lua(cmd: CompositorCommand) -> Result<()> {
             format!("hl.dispatch(hl.dsp.focus({{ workspace = {id} }}))")
         }
         CompositorCommand::ToggleSpecialWorkspace(name) => {
+            let name = name.replace('\\', "\\\\").replace('"', "\\\"");
             format!("hl.dispatch(hl.dsp.workspace.toggle_special(\"{name}\"))")
         }
         CompositorCommand::NextLayout => {
@@ -72,6 +84,8 @@ async fn dispatch_lua(cmd: CompositorCommand) -> Result<()> {
             return Ok(());
         }
         CompositorCommand::CustomDispatch(dispatcher, args) => {
+            let dispatcher = dispatcher.replace('\\', "\\\\").replace('"', "\\\"");
+            let args = args.replace('\\', "\\\\").replace('"', "\\\"");
             format!("hl.dispatch(hl.dsp.{dispatcher}({args}))")
         }
     };
@@ -101,7 +115,6 @@ pub fn is_available() -> bool {
 }
 
 pub async fn run_listener(tx: &broadcast::Sender<ServiceEvent<CompositorService>>) -> Result<()> {
-    // copying this strategy from how niri's IPC works
     let internal_state = Arc::new(RwLock::new(HyprInternalState::default()));
 
     // Initial fetch

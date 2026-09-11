@@ -1,13 +1,13 @@
+use super::impl_service_subscription;
 use crate::services::{ReadOnlyService, ServiceEvent};
-use iced::Subscription;
-use iced::futures::{SinkExt, StreamExt, channel::mpsc::Sender, stream::pending};
-use iced::stream::channel;
+use iced::futures::{SinkExt, StreamExt, channel::mpsc::Sender};
 use iced::widget::{image, svg};
 use log::{error, info};
-use std::any::TypeId;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::sync::broadcast;
+use tokio::time::sleep;
 use tokio_stream::wrappers::BroadcastStream;
 use zbus::zvariant::OwnedValue;
 use zbus::{Connection, zvariant};
@@ -67,8 +67,14 @@ fn try_icon_from_hints(hints: &HashMap<String, OwnedValue>) -> Option<Notificati
         .or(hints.get("image_data"))
         .or(hints.get("icon_data"))
         && let Ok(hint_image_data) = HintImageData::try_from(image_data.clone())
+        && let width = hint_image_data.width
+        && width > 0
+        && let height = hint_image_data.height
+        && height > 0
+        && let rowstride = hint_image_data.rowstride
+        && rowstride >= width * hint_image_data.channels
         && let Some(bytes) = if hint_image_data.has_alpha && hint_image_data.channels == 4 {
-            Some(hint_image_data.image_bytes)
+            destride_rgba(&hint_image_data.image_bytes, width, height, rowstride)
         } else if !hint_image_data.has_alpha && hint_image_data.channels == 3 {
             Some(
                 hint_image_data
@@ -82,18 +88,31 @@ fn try_icon_from_hints(hints: &HashMap<String, OwnedValue>) -> Option<Notificati
         } else {
             None
         }
-        && bytes.len() == (hint_image_data.width * hint_image_data.height * 4) as usize
+        && bytes.len() == (width * height * 4) as usize
     {
         Some(NotificationIcon::Image(
-            iced::advanced::image::Handle::from_rgba(
-                hint_image_data.width as u32,
-                hint_image_data.height as u32,
-                bytes,
-            ),
+            iced::advanced::image::Handle::from_rgba(width as u32, height as u32, bytes),
         ))
     } else {
         None
     }
+}
+
+// The spec allows rowstride >= width*4 (row padding); copy row-by-row so
+// padded buffers render instead of being dropped by a strict length check.
+fn destride_rgba(bytes: &[u8], width: i32, height: i32, rowstride: i32) -> Option<Vec<u8>> {
+    let row = (width * 4) as usize;
+    let stride = rowstride as usize;
+    let out_len = row.checked_mul(height as usize)?;
+    if bytes.len() < stride.checked_mul(height as usize)? {
+        return None;
+    }
+    let mut out = Vec::with_capacity(out_len);
+    for y in 0..height as usize {
+        let start = y * stride;
+        out.extend_from_slice(&bytes[start..start + row]);
+    }
+    Some(out)
 }
 
 const HINT_KEYS: &[&str] = &[
@@ -139,14 +158,7 @@ fn resolve_candidate(candidate: String) -> Option<PathBuf> {
 }
 
 fn freedesktop_lookup(name: &str) -> Option<PathBuf> {
-    let base = freedesktop_icons::lookup(name).with_cache();
-    match linicon_theme::get_icon_theme() {
-        Some(theme) => base
-            .with_theme(&theme)
-            .find()
-            .or_else(|| freedesktop_icons::lookup(name).with_cache().find()),
-        None => base.find(),
-    }
+    crate::services::xdg_icons::find_icon_path(name)
 }
 
 #[derive(Debug, Clone)]
@@ -195,9 +207,11 @@ impl NotificationsService {
                 State::Error
             }
             State::Error => {
-                error!("Notifications service error");
-                let _ = pending::<u8>().next().await;
-                State::Error
+                error!("Notifications service error, retrying in 5 seconds");
+
+                sleep(Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }
@@ -215,15 +229,5 @@ impl ReadOnlyService for NotificationsService {
 
     fn update(&mut self, _event: NotificationEvent) {}
 
-    fn subscribe() -> Subscription<ServiceEvent<Self>> {
-        Subscription::run_with(TypeId::of::<Self>(), |_| {
-            channel(100, async |mut output| {
-                let mut state = State::Init;
-
-                loop {
-                    state = NotificationsService::start_listening(state, &mut output).await;
-                }
-            })
-        })
-    }
+    impl_service_subscription!(NotificationsService, 100);
 }

@@ -7,6 +7,7 @@ use crate::{
     config::UpdatesModuleConfig,
     t,
     theme::use_theme,
+    utils::truncate_text,
 };
 use iced::{
     Alignment, Element, Length, Padding, Subscription, SurfaceId, Task,
@@ -18,6 +19,8 @@ use log::error;
 use serde::Deserialize;
 use std::{process::Stdio, time::Duration};
 use tokio::{process, time::sleep};
+
+const CHANGELOG_MENU_MAX_HEIGHT: f32 = 300.;
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Update {
@@ -88,17 +91,10 @@ pub enum Action {
     CloseMenu(SurfaceId, Task<Message>),
 }
 
-#[derive(Debug, Default, Clone, Eq, PartialEq)]
-enum State {
-    #[default]
-    Checking,
-    Ready,
-}
-
 #[derive(Debug, Clone)]
 pub struct Updates {
     config: UpdatesModuleConfig,
-    state: State,
+    is_checking: bool,
     updates: Vec<Update>,
     is_updates_list_open: bool,
 }
@@ -107,7 +103,7 @@ impl Updates {
     pub fn new(config: UpdatesModuleConfig) -> Self {
         Self {
             config,
-            state: State::default(),
+            is_checking: true,
             updates: Vec::new(),
             is_updates_list_open: false,
         }
@@ -117,7 +113,7 @@ impl Updates {
         match message {
             Message::UpdatesCheckCompleted(updates) => {
                 self.updates = updates;
-                self.state = State::Ready;
+                self.is_checking = false;
 
                 Action::None
             }
@@ -141,7 +137,7 @@ impl Updates {
                 Action::None
             }
             Message::CheckNow => {
-                self.state = State::Checking;
+                self.is_checking = true;
                 let check_command = self.config.check_cmd.clone();
 
                 Action::CheckForUpdates(Task::perform(
@@ -173,8 +169,7 @@ impl Updates {
     pub fn view(&'_ self) -> Element<'_, Message> {
         let (space, font_size, animated) =
             use_theme(|theme| (theme.space, theme.font_size, theme.animations_enabled));
-        let is_checking = matches!(self.state, State::Checking);
-        let icon_element: Element<'_, Message> = if is_checking {
+        let icon_element: Element<'_, Message> = if self.is_checking {
             spinning_icon(font_size.sm, animated)
         } else {
             container(icon(if self.updates.is_empty() {
@@ -231,18 +226,8 @@ impl Updates {
                                                     .width(Length::Fill),
                                                 text(format!(
                                                     "{} -> {}",
-                                                    {
-                                                        let mut res = update.from.clone();
-                                                        res.truncate(18);
-
-                                                        res
-                                                    },
-                                                    {
-                                                        let mut res = update.to.clone();
-                                                        res.truncate(18);
-
-                                                        res
-                                                    },
+                                                    truncate_text(&update.from, 18),
+                                                    truncate_text(&update.to, 18),
                                                 ))
                                                 .width(Length::Fill)
                                                 .align_x(Horizontal::Right)
@@ -257,7 +242,7 @@ impl Updates {
                             )
                             .spacing(space.xs),
                         )
-                        .max_height(300),
+                        .max_height(CHANGELOG_MENU_MAX_HEIGHT),
                     );
                 }
                 elements.into()
@@ -288,13 +273,14 @@ impl Updates {
                     .on_press(Message::CheckNow)
                     .width(Length::Fill),
             )
-            .spacing(space.xs)
             .width(MenuSize::Small)
             .into()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         let check_cmd = self.config.check_cmd.clone();
+        // `validate` only guards against 0; floor it so a tight setting
+        // doesn't run the user's check command back-to-back.
         let interval_secs = self.config.interval.max(60);
 
         Subscription::run_with((check_cmd, interval_secs), |data| {
@@ -304,7 +290,11 @@ impl Updates {
                 loop {
                     let updates = check_update_now(&check_cmd).await;
 
-                    let _ = output.try_send(Message::UpdatesCheckCompleted(updates));
+                    if let Err(e) = output.try_send(Message::UpdatesCheckCompleted(updates)) {
+                        // A full channel means the app is not keeping up;
+                        // drop this result but say so instead of failing silently.
+                        log::warn!("Updates result dropped, receiver unavailable: {e}");
+                    }
 
                     sleep(interval).await;
                 }

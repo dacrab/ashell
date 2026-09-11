@@ -42,10 +42,6 @@ pub enum TimezoneDirection {
     Backward,
 }
 
-pub enum Action {
-    None,
-}
-
 pub struct Tempo {
     config: TempoModuleConfig,
     date: DateTime<Local>,
@@ -55,11 +51,14 @@ pub struct Tempo {
     current_format_index: usize,
     current_timezone_index: usize,
     location_visible: bool,
+    /// Bar clock text, recomputed in `update()` — `view()` runs every frame
+    /// and must not re-parse the timezone or re-format with chrono.
+    display_text: String,
 }
 
 impl Tempo {
     pub fn new(config: TempoModuleConfig) -> Self {
-        Self {
+        let mut tempo = Self {
             config,
             date: Local::now(),
             selected_date: None,
@@ -68,49 +67,46 @@ impl Tempo {
             current_format_index: 0,
             current_timezone_index: 0,
             location_visible: true,
-        }
+            display_text: String::new(),
+        };
+        tempo.refresh_display_text();
+        tempo
+    }
+
+    fn refresh_display_text(&mut self) {
+        self.display_text = self.time_str(self.current_format(), self.current_timezone_index, None);
     }
 
     fn current_format(&self) -> &str {
-        if !self.config.formats.is_empty() {
-            self.config
-                .formats
-                .get(self.current_format_index)
-                .or_else(|| self.config.formats.first())
-                .unwrap_or(&self.config.clock_format)
-        } else {
-            &self.config.clock_format
-        }
+        self.config
+            .formats
+            .get(self.current_format_index)
+            .or_else(|| self.config.formats.first())
+            .unwrap_or(&self.config.clock_format)
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
+    pub fn update(&mut self, message: Message) {
+        let mut clock_dirty = false;
         match message {
             Message::Update => {
                 self.date = Local::now();
-
-                Action::None
+                clock_dirty = true;
             }
             Message::ChangeSelectDate(selected_date) => {
                 self.selected_date = selected_date;
-
-                Action::None
             }
             Message::UpdateWeather(data) => {
                 self.weather_data = Some(*data);
-
-                Action::None
             }
             Message::UpdateLocation(location) => {
                 self.location = Some(location);
-
-                Action::None
             }
             Message::CycleFormat => {
                 if !self.config.formats.is_empty() {
                     self.current_format_index =
                         (self.current_format_index + 1) % self.config.formats.len();
                 }
-                Action::None
+                clock_dirty = true;
             }
             Message::CycleTimezone(direction) => {
                 if !self.config.timezones.is_empty() {
@@ -123,7 +119,7 @@ impl Tempo {
                             .unwrap_or(len - 1),
                     };
                 }
-                Action::None
+                clock_dirty = true;
             }
             Message::SetTimezone(index) => {
                 if !self.config.timezones.is_empty() {
@@ -132,7 +128,7 @@ impl Tempo {
                         self.current_timezone_index = index;
                     }
                 }
-                Action::None
+                clock_dirty = true;
             }
             Message::ConfigReloaded(new_config) => {
                 if new_config.formats.is_empty()
@@ -155,22 +151,23 @@ impl Tempo {
                 }
 
                 self.config = new_config;
-                Action::None
+                clock_dirty = true;
             }
             Message::ToggleLocationVisibility => {
                 self.location_visible = !self.location_visible;
-                Action::None
             }
+        }
+        if clock_dirty {
+            self.refresh_display_text();
         }
     }
 
     pub fn view(&'_ self) -> Element<'_, Message> {
         let space = use_theme(|t| t.space);
-        let display_text = self.time_str(self.current_format(), self.current_timezone_index, None);
 
         Row::with_capacity(2)
             .push(self.weather_indicator())
-            .push(text(display_text))
+            .push(text(self.display_text.clone()))
             .align_y(Vertical::Center)
             .spacing(space.sm)
             .into()
@@ -298,7 +295,9 @@ impl Tempo {
                             }
                         }
 
-                        failed_attempt += 1;
+                        // Cap the backoff so persistent failures don't push
+                        // retries further and further apart.
+                        failed_attempt = (failed_attempt + 1).min(30);
                         tokio::time::sleep(Duration::from_secs(60 * failed_attempt)).await;
                     }
                 })

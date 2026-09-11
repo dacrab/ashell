@@ -1,14 +1,12 @@
-use crate::services::{
-    bluetooth::BluetoothService,
-    network::{NetworkBackend, NetworkData, NetworkEvent},
-};
+use crate::services::{network::NetworkBackend, rfkill};
 
-use super::{AccessPointData, ActiveConnectionInfo, KnownConnection, Vpn};
+use super::{
+    AccessPointData, ActiveConnectionInfo, KnownConnection, NetworkData, NetworkEvent, Vpn,
+};
 use iced::futures::{Stream, StreamExt, stream::select_all};
 use itertools::Itertools;
 use log::{debug, warn};
 use std::{collections::HashMap, ops::Deref};
-use tokio::process::Command;
 use zbus::{
     Result, proxy,
     zvariant::{self, ObjectPath, OwnedObjectPath, OwnedValue, Value},
@@ -21,9 +19,7 @@ impl super::NetworkBackend for NetworkDbus<'_> {
         let nm = self;
 
         // airplane mode
-        let bluetooth_soft_blocked = BluetoothService::check_rfkill_soft_block()
-            .await
-            .unwrap_or_default();
+        let bluetooth_soft_blocked = rfkill::check_soft_block().await.unwrap_or_default();
 
         let wifi_present = nm.wifi_device_present().await?;
 
@@ -57,17 +53,7 @@ impl super::NetworkBackend for NetworkDbus<'_> {
     }
 
     async fn set_airplane_mode(&self, enable: bool) -> anyhow::Result<()> {
-        let rfkill_res = Command::new("/usr/sbin/rfkill")
-            .arg(if enable { "block" } else { "unblock" })
-            .arg("bluetooth")
-            .output()
-            .await;
-
-        if let Err(e) = rfkill_res {
-            debug!("Failed to set bluetooth rfkill: {e}");
-        } else {
-            debug!("Bluetooth rfkill set successfully");
-        }
+        rfkill::set_block(enable).await;
 
         let nm = NetworkDbus::new(self.0.inner().connection()).await?;
         nm.set_wireless_enabled(!enable).await?;
@@ -163,8 +149,8 @@ impl super::NetworkBackend for NetworkDbus<'_> {
             debug!("Activating VPN: {connection:?}");
             self.activate_connection(
                 connection,
-                OwnedObjectPath::try_from("/").expect("D-Bus root path is always valid"),
-                OwnedObjectPath::try_from("/").expect("D-Bus root path is always valid"),
+                OwnedObjectPath::try_from("/")?,
+                OwnedObjectPath::try_from("/")?,
             )
             .await?;
         } else {
@@ -473,22 +459,7 @@ impl NetworkDbus<'_> {
     }
 
     pub async fn wifi_device_present(&self) -> anyhow::Result<bool> {
-        let devices = self.devices().await?;
-        for d in devices {
-            let device = DeviceProxy::builder(self.0.inner().connection())
-                .path(d)?
-                .build()
-                .await?;
-
-            if matches!(
-                device.device_type().await.map(DeviceType::from),
-                Ok(DeviceType::Wifi)
-            ) {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
+        Ok(!self.wireless_devices().await?.is_empty())
     }
 
     pub async fn active_connections(&self) -> anyhow::Result<Vec<OwnedObjectPath>> {
@@ -594,7 +565,7 @@ impl NetworkDbus<'_> {
     ) -> anyhow::Result<Vec<KnownConnection>> {
         let settings = NetworkSettingsDbus::new(self.0.inner().connection()).await?;
 
-        let known_connections = settings.know_connections().await?;
+        let known_connections = settings.list_connections().await?;
 
         let mut known_ssid = Vec::with_capacity(known_connections.len());
         let mut known_vpn = Vec::new();
@@ -687,33 +658,24 @@ impl NetworkDbus<'_> {
                     let strength = ap.strength().await?;
                     let max_bitrate = ap.max_bitrate().await.unwrap_or_default();
                     let frequency = ap.frequency().await.unwrap_or_default();
-                    if let Some(access_point) = aps.get(&ssid)
-                        && AccessPointData::is_better(
-                            access_point.max_bitrate,
-                            access_point.frequency,
-                            access_point.strength,
-                            max_bitrate,
-                            frequency,
-                            strength,
-                        )
+                    let access_point = AccessPointData {
+                        ssid,
+                        strength,
+                        max_bitrate,
+                        frequency,
+                        state,
+                        public,
+                        working: false,
+                        path: ap.inner().path().clone().into(),
+                        device_path: device.0.path().clone().into(),
+                    };
+                    if let Some(existing) = aps.get(&access_point.ssid)
+                        && existing.is_better_than(&access_point)
                     {
                         continue;
                     }
 
-                    aps.insert(
-                        ssid.clone(),
-                        AccessPointData {
-                            ssid,
-                            strength,
-                            max_bitrate,
-                            frequency,
-                            state,
-                            public,
-                            working: false,
-                            path: ap.inner().path().clone().into(),
-                            device_path: device.0.path().clone().into(),
-                        },
-                    );
+                    aps.insert(access_point.ssid.clone(), access_point);
                 }
 
                 let aps = aps
@@ -737,14 +699,7 @@ impl NetworkDbus<'_> {
             .into_iter()
             .fold(HashMap::<String, AccessPointData>::new(), |mut acc, ap| {
                 if let Some(existing) = acc.get(&ap.ssid)
-                    && AccessPointData::is_better(
-                        existing.max_bitrate,
-                        existing.frequency,
-                        existing.strength,
-                        ap.max_bitrate,
-                        ap.frequency,
-                        ap.strength,
-                    )
+                    && existing.is_better_than(&ap)
                 {
                     return acc;
                 }
@@ -775,10 +730,6 @@ impl NetworkSettingsDbus<'_> {
         let settings = SettingsProxy::new(conn).await?;
 
         Ok(Self(settings))
-    }
-
-    pub async fn know_connections(&self) -> anyhow::Result<Vec<OwnedObjectPath>> {
-        Ok(self.list_connections().await?)
     }
 
     pub async fn find_connection(&self, name: &str) -> anyhow::Result<Option<OwnedObjectPath>> {
@@ -869,18 +820,11 @@ impl From<String> for ConnectivityState {
 
 impl From<Vec<ConnectivityState>> for ConnectivityState {
     fn from(states: Vec<ConnectivityState>) -> ConnectivityState {
-        if states.is_empty() {
-            return ConnectivityState::Unknown;
-        }
-
-        let mut state = states[0];
-        for s in states.iter().skip(1) {
-            if Into::<u32>::into(*s) >= state.into() {
-                state = *s;
-            }
-        }
-
-        state
+        // The best-connected interface wins: one Full link means the machine is online.
+        states
+            .into_iter()
+            .max_by_key(|s| u32::from(*s))
+            .unwrap_or(ConnectivityState::Unknown)
     }
 }
 
@@ -981,15 +925,6 @@ pub trait NetworkManager {
 trait ActiveConnection {
     #[zbus(property)]
     fn id(&self) -> Result<String>;
-
-    #[zbus(property)]
-    fn uuid(&self) -> Result<String>;
-
-    #[zbus(property, name = "Type")]
-    fn connection_type(&self) -> Result<String>;
-
-    #[zbus(property)]
-    fn state(&self) -> Result<u32>;
 
     #[zbus(property)]
     fn vpn(&self) -> Result<bool>;

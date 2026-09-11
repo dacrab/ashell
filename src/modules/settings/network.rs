@@ -42,7 +42,10 @@ static WIFI_LOCK_SIGNAL_ICONS: [StaticIcon; 5] = [
     StaticIcon::WifiLock5,
 ];
 
-fn get_connectivity_state(
+const WIFI_MENU_MAX_HEIGHT: f32 = 200.;
+const VPN_MENU_MAX_HEIGHT: f32 = 300.;
+
+fn connectivity_state(
     connectivity: ConnectivityState,
     indicator_state: IndicatorState,
 ) -> IndicatorState {
@@ -54,25 +57,25 @@ fn get_connectivity_state(
 }
 
 impl ActiveConnectionInfo {
-    pub fn get_wifi_icon(signal: u8) -> StaticIcon {
+    pub fn wifi_icon(signal: u8) -> StaticIcon {
         let clamped_signal = signal.min(100);
         WIFI_SIGNAL_ICONS[1 + f32::round(clamped_signal as f32 / 100. * 4.) as usize]
     }
 
-    pub fn get_wifi_lock_icon(signal: u8) -> StaticIcon {
+    pub fn wifi_lock_icon(signal: u8) -> StaticIcon {
         let clamped_signal = signal.min(100);
         WIFI_LOCK_SIGNAL_ICONS[f32::round(clamped_signal as f32 / 100. * 4.) as usize]
     }
 
-    pub fn get_icon(&self) -> StaticIcon {
+    pub fn icon(&self) -> StaticIcon {
         match self {
-            Self::WiFi { strength, .. } => Self::get_wifi_icon(*strength),
+            Self::WiFi { strength, .. } => Self::wifi_icon(*strength),
             Self::Wired { .. } => StaticIcon::Ethernet,
             Self::Vpn { .. } => StaticIcon::Vpn,
         }
     }
 
-    pub fn get_indicator_state(&self) -> IndicatorState {
+    pub fn indicator_state(&self) -> IndicatorState {
         match self {
             Self::WiFi {
                 strength: 0 | 1, ..
@@ -86,7 +89,7 @@ impl ActiveConnectionInfo {
 pub enum Message {
     Event(ServiceEvent<NetworkService>),
     ToggleWiFi,
-    ScanNearByWiFi,
+    ScanNearbyWiFi,
     WiFiMore(SurfaceId),
     VpnMore(SurfaceId),
     SelectAccessPoint(AccessPointData),
@@ -95,9 +98,9 @@ pub enum Message {
     ToggleVpn(Vpn),
     ToggleAirplaneMode,
     OpenMore,
-    ToggleWifiMenu,
+    ToggleWiFiMenu,
     ToggleVPNMenu,
-    WifiMenuOpened,
+    WiFiMenuOpened,
     PasswordDialogConfirmed(String, String),
     OpenNetworkDialogConfirmed(String),
     ConfigReloaded(NetworkSettingsConfig),
@@ -109,7 +112,7 @@ pub enum Action {
     RequestPassword(SurfaceId, String),
     ConfirmOpenNetwork(String),
     Command(Task<Message>),
-    ToggleWifiMenu,
+    ToggleWiFiMenu,
     ToggleVpnMenu,
     CloseSubMenu(Task<Message>),
     CloseMenu(SurfaceId),
@@ -152,6 +155,23 @@ impl NetworkSettings {
         }
     }
 
+    /// Send a command to the live service, forwarding the follow-up events.
+    fn dispatch(&mut self, cmd: NetworkCommand) -> Action {
+        match self.service.as_mut() {
+            Some(service) => Action::Command(service.command(cmd).map(Message::Event)),
+            _ => Action::None,
+        }
+    }
+
+    /// Like [`dispatch`](Self::dispatch), but closes the submenu after
+    /// dispatching (airplane mode and Wi-Fi toggles).
+    fn dispatch_closing(&mut self, cmd: NetworkCommand) -> Action {
+        match self.service.as_mut() {
+            Some(service) => Action::CloseSubMenu(service.command(cmd).map(Message::Event)),
+            _ => Action::None,
+        }
+    }
+
     pub fn is_airplane_mode(&self) -> Option<bool> {
         self.service.as_ref().map(|s| s.airplane_mode)
     }
@@ -174,43 +194,19 @@ impl NetworkSettings {
                 }
                 _ => Action::None,
             },
-            Message::ToggleAirplaneMode => match self.service.as_mut() {
-                Some(service) => Action::CloseSubMenu(
-                    service
-                        .command(NetworkCommand::ToggleAirplaneMode)
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
-            Message::ToggleWiFi => match self.service.as_mut() {
-                Some(service) => Action::CloseSubMenu(
-                    service
-                        .command(NetworkCommand::ToggleWiFi)
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
-            Message::SelectAccessPoint(ac) => match self.service.as_mut() {
-                Some(service) => Action::Command(
-                    service
-                        .command(NetworkCommand::SelectAccessPoint((ac, None)))
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
+            Message::ToggleAirplaneMode => {
+                self.dispatch_closing(NetworkCommand::ToggleAirplaneMode)
+            }
+            Message::ToggleWiFi => self.dispatch_closing(NetworkCommand::ToggleWiFi),
+            Message::SelectAccessPoint(ac) => {
+                self.dispatch(NetworkCommand::SelectAccessPoint((ac, None)))
+            }
             Message::RequestWiFiPassword(id, ssid) => {
                 info!("Requesting password for {ssid}");
                 Action::RequestPassword(id, ssid)
             }
             Message::ConfirmOpenNetwork(ssid) => Action::ConfirmOpenNetwork(ssid),
-            Message::ScanNearByWiFi => match self.service.as_mut() {
-                Some(service) => Action::Command(
-                    service
-                        .command(NetworkCommand::ScanNearByWiFi)
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
+            Message::ScanNearbyWiFi => self.dispatch(NetworkCommand::ScanNearbyWiFi),
             Message::WiFiMore(id) => {
                 if let Some(cmd) = &self.config.wifi_more_cmd {
                     crate::utils::launcher::execute_command(cmd);
@@ -227,33 +223,16 @@ impl NetworkSettings {
                     Action::None
                 }
             }
-            Message::ToggleVpn(vpn) => match self.service.as_mut() {
-                Some(service) => Action::Command(
-                    service
-                        .command(NetworkCommand::ToggleVpn(vpn))
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
+            Message::ToggleVpn(vpn) => self.dispatch(NetworkCommand::ToggleVpn(vpn)),
             Message::OpenMore => {
                 if let Some(cmd) = &self.config.wifi_more_cmd {
                     crate::utils::launcher::execute_command(cmd);
                 }
                 Action::None
             }
-            Message::ToggleWifiMenu => Action::ToggleWifiMenu,
+            Message::ToggleWiFiMenu => Action::ToggleWiFiMenu,
             Message::ToggleVPNMenu => Action::ToggleVpnMenu,
-            Message::WifiMenuOpened => {
-                if let Some(service) = self.service.as_mut() {
-                    Action::Command(
-                        service
-                            .command(NetworkCommand::ScanNearByWiFi)
-                            .map(Message::Event),
-                    )
-                } else {
-                    Action::None
-                }
-            }
+            Message::WiFiMenuOpened => self.dispatch(NetworkCommand::ScanNearbyWiFi),
             Message::PasswordDialogConfirmed(ssid, password) => match self.service.as_mut() {
                 Some(service) => {
                     let ap = service
@@ -317,9 +296,8 @@ impl NetworkSettings {
                 });
 
                 Some(if let Some(a) = active {
-                    let icon_type = a.get_icon();
-                    let state =
-                        get_connectivity_state(service.connectivity, a.get_indicator_state());
+                    let icon_type = a.icon();
+                    let state = connectivity_state(service.connectivity, a.indicator_state());
                     let strength = match a {
                         ActiveConnectionInfo::WiFi { strength, .. } => Some(*strength),
                         _ => None,
@@ -363,7 +341,7 @@ impl NetworkSettings {
                 .iter()
                 .find(|c| matches!(c, ActiveConnectionInfo::Vpn { .. }))
                 .map(|a| {
-                    let icon_type = a.get_icon();
+                    let icon_type = a.icon();
 
                     container(icon(icon_type))
                         .style(|theme: &Theme| container::Style {
@@ -385,7 +363,7 @@ impl NetworkSettings {
             if service.wifi_present {
                 let active_connection = service.active_connections.iter().find_map(|c| match c {
                     ActiveConnectionInfo::WiFi { name, strength, .. } => {
-                        Some((name, strength, c.get_icon()))
+                        Some((name, strength, c.icon()))
                     }
                     _ => None,
                 });
@@ -401,7 +379,7 @@ impl NetworkSettings {
                         service.wifi_enabled.then_some((
                             SubMenu::Wifi,
                             sub_menu,
-                            Message::ToggleWifiMenu,
+                            Message::ToggleWiFiMenu,
                         )),
                     ),
                     service.wifi_enabled.then_some((
@@ -432,7 +410,6 @@ impl NetworkSettings {
                 .iter()
                 .any(|c| matches!(c, KnownConnection::Vpn { .. }))
                 .then(|| {
-                    // Create HashMap for O(1) lookup of known VPNs
                     let known_vpn_map: std::collections::HashMap<&str, &Vpn> = service
                         .known_connections
                         .iter()
@@ -442,7 +419,6 @@ impl NetworkSettings {
                         })
                         .collect();
 
-                    // Find active VPNs using O(1) lookup
                     let actives: Vec<&Vpn> = service
                         .active_connections
                         .iter()
@@ -537,7 +513,7 @@ impl NetworkSettings {
                     )
                 } else {
                     icon_button(StaticIcon::Refresh)
-                        .on_press(Message::ScanNearByWiFi)
+                        .on_press(Message::ScanNearbyWiFi)
                         .into()
                 }
             )
@@ -569,15 +545,15 @@ impl NetworkSettings {
                                     container(
                                         row!(
                                             icon(if ac.public {
-                                                ActiveConnectionInfo::get_wifi_icon(ac.strength)
+                                                ActiveConnectionInfo::wifi_icon(ac.strength)
                                             } else {
-                                                ActiveConnectionInfo::get_wifi_lock_icon(ac.strength)
+                                                ActiveConnectionInfo::wifi_lock_icon(ac.strength)
                                             })
                                             .width(Length::Shrink),
                                             text(ac.ssid.as_str()).width(Length::Fill),
                                         )
                                         .align_y(Alignment::Center)
-                                        .spacing(8),
+                                        .spacing(space.xs),
                                     )
                                     .style(move |theme: &Theme| {
                                         container::Style {
@@ -609,23 +585,14 @@ impl NetworkSettings {
                 })
                 .spacing(space.xxs)
             ).spacing(space.xs))
-            .max_height(200),
+            .max_height(WIFI_MENU_MAX_HEIGHT),
         )
         .spacing(space.xs);
 
-        if show_more_button {
-            column!(
-                main,
-                divider(),
-                styled_button(t!("settings-more"))
-                    .on_press(Message::WiFiMore(id))
-                    .width(Length::Fill)
-            )
-            .spacing(space.sm)
-            .into()
-        } else {
-            main.into()
-        }
+        crate::components::with_more_button(
+            main.into(),
+            show_more_button.then_some(Message::WiFiMore(id)),
+        )
     }
 
     fn vpn_menu<'a>(
@@ -634,7 +601,6 @@ impl NetworkSettings {
         show_more_button: bool,
     ) -> Element<'a, Message> {
         let space = use_theme(|t| t.space);
-        // Create HashSet of active VPN names for O(1) lookup
         let active_vpn_names: std::collections::HashSet<&str> = service
             .active_connections
             .iter()
@@ -654,7 +620,7 @@ impl NetworkSettings {
             })
             .collect();
 
-        vpns.sort_by_key(|a| a.name.clone());
+        vpns.sort_by(|a, b| a.name.cmp(&b.name));
 
         let vpn_list = Column::with_children(
             vpns.into_iter()
@@ -677,21 +643,12 @@ impl NetworkSettings {
 
         let main = container(scrollable(vpn_list))
             .height(Length::Shrink)
-            .max_height(300);
+            .max_height(VPN_MENU_MAX_HEIGHT);
 
-        if show_more_button {
-            column!(
-                main,
-                divider(),
-                styled_button(t!("settings-more"))
-                    .on_press(Message::VpnMore(id))
-                    .width(Length::Fill)
-            )
-            .spacing(space.sm)
-            .into()
-        } else {
-            main.into()
-        }
+        crate::components::with_more_button(
+            main.into(),
+            show_more_button.then_some(Message::VpnMore(id)),
+        )
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -731,7 +688,10 @@ impl NetworkSettings {
             } else if active_vpns.len() == 1 {
                 Some(active_vpns[0].clone())
             } else {
-                Some(format!("{} VPNs connected", active_vpns.len()))
+                Some(t!(
+                    "settings-network-vpns-connected",
+                    count = active_vpns.len()
+                ))
             }
         })
     }

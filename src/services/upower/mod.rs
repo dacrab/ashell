@@ -1,21 +1,19 @@
+use super::impl_service_subscription;
 use super::{ReadOnlyService, Service, ServiceEvent};
 use crate::{
     components::icons::StaticIcon, services::throttle::ThrottleExt, utils::IndicatorState,
 };
 use dbus::{DeviceProxy, PowerProfilesProxy, SystemBattery, UPowerDbus, UPowerProxy, UpDeviceKind};
-use iced::{
-    Subscription,
-    futures::{
-        SinkExt, Stream, StreamExt,
-        channel::mpsc::Sender,
-        stream::{once, pending, select_all},
-        stream_select,
-    },
-    stream::channel,
+use iced::futures::{
+    SinkExt, Stream, StreamExt,
+    channel::mpsc::Sender,
+    stream::{once, pending, select_all},
+    stream_select,
 };
 use log::{error, warn};
 use serde::Deserialize;
-use std::{any::TypeId, fmt, time::Duration};
+use std::{fmt, pin::Pin, time::Duration};
+use tokio::time::sleep;
 use zbus::zvariant::ObjectPath;
 
 mod dbus;
@@ -70,7 +68,7 @@ pub struct BatteryData {
 }
 
 impl BatteryData {
-    pub fn get_indicator_state(&self) -> IndicatorState {
+    pub fn indicator_state(&self) -> IndicatorState {
         match self {
             BatteryData {
                 status: BatteryStatus::Charging(_),
@@ -92,7 +90,7 @@ impl BatteryData {
         }
     }
 
-    pub fn get_icon(&self) -> StaticIcon {
+    pub fn icon(&self) -> StaticIcon {
         match self {
             BatteryData {
                 status: BatteryStatus::Charging(_),
@@ -131,9 +129,9 @@ pub struct Peripheral {
 }
 
 impl Peripheral {
-    pub fn get_icon_state(&self) -> StaticIcon {
+    pub fn icon_state(&self) -> StaticIcon {
         let get_type_icon =
-            |bat_level: BatLevel| -> StaticIcon { self.kind.get_battery_icon(bat_level) };
+            |bat_level: BatLevel| -> StaticIcon { self.kind.battery_icon(bat_level) };
 
         match self.data {
             BatteryData {
@@ -193,7 +191,7 @@ impl fmt::Display for PeripheralDeviceKind {
 }
 
 impl PeripheralDeviceKind {
-    pub fn get_icon(self) -> StaticIcon {
+    pub fn icon(self) -> StaticIcon {
         match self {
             PeripheralDeviceKind::Keyboard => StaticIcon::Keyboard,
             PeripheralDeviceKind::Mouse => StaticIcon::Mouse,
@@ -202,7 +200,7 @@ impl PeripheralDeviceKind {
         }
     }
 
-    fn get_battery_icon(self, level: BatLevel) -> StaticIcon {
+    fn battery_icon(self, level: BatLevel) -> StaticIcon {
         let icons = match self {
             PeripheralDeviceKind::Keyboard => &KEYBOARD_BATTERY_ICONS,
             PeripheralDeviceKind::Mouse => &MOUSE_BATTERY_ICONS,
@@ -326,17 +324,7 @@ impl ReadOnlyService for UPowerService {
         }
     }
 
-    fn subscribe() -> Subscription<ServiceEvent<Self>> {
-        Subscription::run_with(TypeId::of::<Self>(), |_| {
-            channel(100, async |mut output| {
-                let mut state = State::Init;
-
-                loop {
-                    state = UPowerService::start_listening(state, &mut output).await;
-                }
-            })
-        })
-    }
+    impl_service_subscription!(UPowerService, 100);
 }
 
 impl UPowerService {
@@ -356,32 +344,18 @@ impl UPowerService {
         };
         let peripherals = UPowerService::initialize_peripheral_data(conn).await?;
 
-        let power_profile = UPowerService::initialize_power_profile_data(conn).await;
-
-        match (system_battery, power_profile) {
-            (Some(battery), Ok(power_profile)) => Ok((
-                Some((battery.0, battery.1.get_devices_path())),
-                charge_limit,
-                peripherals,
-                power_profile,
-            )),
-            (Some(battery), Err(err)) => {
+        let power_profile = match UPowerService::initialize_power_profile_data(conn).await {
+            Ok(power_profile) => power_profile,
+            Err(err) => {
                 warn!("Failed to get power profile: {err}");
-
-                Ok((
-                    Some((battery.0, battery.1.get_devices_path())),
-                    charge_limit,
-                    peripherals,
-                    PowerProfile::Unknown,
-                ))
+                PowerProfile::Unknown
             }
-            (None, Ok(power_profile)) => Ok((None, charge_limit, peripherals, power_profile)),
-            (None, Err(err)) => {
-                warn!("Failed to get power profile: {err}");
+        };
 
-                Ok((None, charge_limit, peripherals, PowerProfile::Unknown))
-            }
-        }
+        let system_battery =
+            system_battery.map(|battery| (battery.0, battery.1.get_devices_path()));
+
+        Ok((system_battery, charge_limit, peripherals, power_profile))
     }
 
     async fn initialize_power_profile_data(
@@ -536,12 +510,43 @@ impl UPowerService {
         system_battery_devices: Option<&Vec<ObjectPath<'static>>>,
         peripheral_paths: &[ObjectPath<'static>],
     ) -> anyhow::Result<impl Stream<Item = UPowerEvent> + use<>> {
-        let system_battery_event = if let Some(battery_devices) = system_battery_devices {
+        // Requery to run when a watched device emits a battery signal.
+        #[derive(Clone, Copy)]
+        enum BatteryRefresh {
+            SystemBattery,
+            Peripherals,
+        }
+
+        impl BatteryRefresh {
+            async fn run(self, conn: zbus::Connection) -> Option<UPowerEvent> {
+                match self {
+                    BatteryRefresh::SystemBattery => {
+                        UPowerService::initialize_system_battery_data(&conn)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|(data, _)| UPowerEvent::UpdateSystemBattery(data))
+                    }
+                    BatteryRefresh::Peripherals => UPowerService::initialize_peripheral_data(&conn)
+                        .await
+                        .ok()
+                        .map(UPowerEvent::UpdatePeripherals),
+                }
+            }
+        }
+
+        // Build a battery-signal stream (state/percentage/time-to-full and
+        // time-to-empty, the latter two throttled) for the given devices,
+        // requering via `refresh` on each signal.
+        async fn battery_events(
+            conn: &zbus::Connection,
+            paths: &[ObjectPath<'static>],
+            refresh: BatteryRefresh,
+        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = UPowerEvent> + Send>>> {
             let upower = UPowerDbus::new(conn).await?;
 
             let mut events = Vec::new();
-
-            for device_path in battery_devices {
+            for device_path in paths {
                 let device = upower.get_device(device_path).await?;
 
                 events.push(
@@ -563,24 +568,22 @@ impl UPowerService {
                         let conn = conn.clone();
                         move |_| {
                             let conn = conn.clone();
-                            async move {
-                                if let Some((data, _)) = Self::initialize_system_battery_data(&conn)
-                                    .await
-                                    .ok()
-                                    .flatten()
-                                {
-                                    Some(UPowerEvent::UpdateSystemBattery(data))
-                                } else {
-                                    None
-                                }
-                            }
+                            async move { refresh.run(conn).await }
                         }
                     })
                     .boxed(),
                 );
             }
 
-            select_all(events).boxed()
+            Ok(if events.is_empty() {
+                pending().boxed()
+            } else {
+                select_all(events).boxed()
+            })
+        }
+
+        let system_battery_event = if let Some(battery_devices) = system_battery_devices {
+            battery_events(conn, battery_devices, BatteryRefresh::SystemBattery).await?
         } else {
             once(async {}).map(|_| UPowerEvent::NoBattery).boxed()
         };
@@ -589,7 +592,6 @@ impl UPowerService {
             let upower = UPowerDbus::new(conn).await?;
 
             let mut events = Vec::new();
-
             for device_path in battery_devices {
                 let device = upower.get_device(device_path).await?;
 
@@ -630,45 +632,7 @@ impl UPowerService {
         };
 
         let peripheral_event = if !peripheral_paths.is_empty() {
-            let upower = UPowerDbus::new(conn).await?;
-
-            let mut events = Vec::new();
-
-            for device_path in peripheral_paths {
-                let device = upower.get_device(device_path).await?;
-
-                events.push(
-                    stream_select!(
-                        device.receive_state_changed().await.map(|_| ()),
-                        device.receive_percentage_changed().await.map(|_| ()),
-                        device
-                            .receive_time_to_full_changed()
-                            .await
-                            .throttle(Duration::from_secs(30))
-                            .map(|_| ()),
-                        device
-                            .receive_time_to_empty_changed()
-                            .await
-                            .throttle(Duration::from_secs(30))
-                            .map(|_| ()),
-                    )
-                    .filter_map({
-                        let conn = conn.clone();
-                        move |_| {
-                            let conn = conn.clone();
-                            async move {
-                                Self::initialize_peripheral_data(&conn)
-                                    .await
-                                    .ok()
-                                    .map(UPowerEvent::UpdatePeripherals)
-                            }
-                        }
-                    })
-                    .boxed(),
-                );
-            }
-
-            select_all(events).boxed()
+            battery_events(conn, peripheral_paths, BatteryRefresh::Peripherals).await?
         } else {
             pending().boxed()
         };
@@ -783,9 +747,11 @@ impl UPowerService {
                 }
             }
             State::Error => {
-                let _ = pending::<u8>().next().await;
+                error!("UPower service error, retrying in 5 seconds");
 
-                State::Error
+                sleep(Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }
@@ -947,7 +913,7 @@ mod tests {
             is_discharging: false,
         };
 
-        assert!(matches!(battery.get_icon(), StaticIcon::Battery0));
+        assert!(matches!(battery.icon(), StaticIcon::Battery0));
     }
 
     #[test]
@@ -958,7 +924,7 @@ mod tests {
             is_discharging: false,
         };
 
-        assert!(matches!(battery.get_icon(), StaticIcon::Battery4));
+        assert!(matches!(battery.icon(), StaticIcon::Battery4));
     }
 
     #[test]
@@ -969,7 +935,7 @@ mod tests {
             is_discharging: false,
         };
 
-        assert!(matches!(battery.get_icon(), StaticIcon::Battery0));
+        assert!(matches!(battery.icon(), StaticIcon::Battery0));
     }
 
     #[test]

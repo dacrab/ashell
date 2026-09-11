@@ -11,55 +11,57 @@ pub fn osd_info_for(app: &App, cmd: &IpcCommand) -> Option<(OsdKind, f32, f32, b
         }
     }
 
+    /// Volume OSD entry shared by the adjust and mute-toggle commands.
+    fn volume_osd_info(app: &App, vol: u32, muted: bool) -> (OsdKind, f32, f32, bool) {
+        let scale = normalise(app.settings.audio().vol_max(), audio::NORMAL_VOLUME).max(1.0);
+        (
+            OsdKind::Volume,
+            normalise(vol, audio::NORMAL_VOLUME),
+            scale,
+            muted,
+        )
+    }
+
     match cmd {
         IpcCommand::VolumeUp { .. } | IpcCommand::VolumeDown { .. } => {
             // Use slider value — it has the optimistic RequestAndTimeout update,
             // which was computed from real_sink_volume in volume_adjust().
-            let vol = app.settings.audio().current_sink_volume().unwrap_or(0);
-            let muted = app.settings.audio().is_sink_muted().unwrap_or(false);
-            let scale = normalise(app.settings.audio().vol_max(), audio::NORMAL_VOLUME).max(1.0);
-            Some((
-                OsdKind::Volume,
-                normalise(vol, audio::NORMAL_VOLUME),
-                scale,
-                muted,
+            Some(volume_osd_info(
+                app,
+                app.settings.audio().current_sink_volume().unwrap_or(0),
+                app.settings.audio().is_sink_muted().unwrap_or(false),
             ))
         }
         IpcCommand::VolumeToggleMute { .. } => {
             let vol = app.settings.audio().real_sink_volume().unwrap_or(0);
             // Invert: the toggle was just sent but PulseAudio hasn't
             // round-tripped yet, so the current state is stale.
-            let muted = !app.settings.audio().is_sink_muted().unwrap_or(false);
-            let scale = normalise(app.settings.audio().vol_max(), audio::NORMAL_VOLUME).max(1.0);
-            Some((
-                OsdKind::Volume,
-                normalise(vol, audio::NORMAL_VOLUME),
-                scale,
-                muted,
+            Some(volume_osd_info(
+                app,
+                vol,
+                !app.settings.audio().is_sink_muted().unwrap_or(false),
             ))
         }
         IpcCommand::MicrophoneUp { .. } | IpcCommand::MicrophoneDown { .. } => {
             // Use slider value — it has the optimistic RequestAndTimeout update,
             // which was computed from real_source_volume in microphone_adjust().
             let vol = app.settings.audio().current_source_volume().unwrap_or(0);
-            let muted = app.settings.audio().is_source_muted().unwrap_or(false);
             Some((
                 OsdKind::Microphone,
                 normalise(vol, audio::AudioSettings::mic_max()),
                 1.0,
-                muted,
+                app.settings.audio().is_source_muted().unwrap_or(false),
             ))
         }
         IpcCommand::MicrophoneToggleMute { .. } => {
             let vol = app.settings.audio().real_source_volume().unwrap_or(0);
             // Invert: the toggle was just sent but PulseAudio hasn't
             // round-tripped yet, so the current state is stale.
-            let muted = !app.settings.audio().is_source_muted().unwrap_or(false);
             Some((
                 OsdKind::Microphone,
                 normalise(vol, audio::AudioSettings::mic_max()),
                 1.0,
-                muted,
+                !app.settings.audio().is_source_muted().unwrap_or(false),
             ))
         }
         IpcCommand::BrightnessUp { .. } | IpcCommand::BrightnessDown { .. } => app

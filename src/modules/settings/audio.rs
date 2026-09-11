@@ -1,7 +1,7 @@
 use super::SubMenu;
 use crate::{
     components::{
-        IconPosition, divider, format_indicator,
+        IconPosition, format_indicator,
         icons::{Icon, StaticIcon},
         slider_control, styled_button,
     },
@@ -10,7 +10,6 @@ use crate::{
         ReadOnlyService, Service, ServiceEvent,
         audio::{AudioCommand, AudioService, ChannelVolumesExt, DevicePortType, Port},
     },
-    t,
     theme::use_theme,
     utils::IndicatorState,
     utils::remote_value::{self, Remote},
@@ -18,7 +17,7 @@ use crate::{
 use iced::{
     Alignment, Element, Length, Subscription, SurfaceId, Task, Theme,
     mouse::ScrollDelta,
-    widget::{Column, Text, column, container, row, text},
+    widget::{Column, Text, container, row, text},
 };
 use libpulse_binding::volume::Volume;
 
@@ -116,7 +115,7 @@ impl AudioSettings {
     pub fn real_sink_volume(&self) -> Option<u32> {
         self.service
             .as_ref()
-            .and_then(|s| s.active_sink().map(|d| d.volume.get_volume()))
+            .and_then(|s| s.active_sink().map(|d| d.volume.volume()))
     }
 
     pub fn is_sink_muted(&self) -> Option<bool> {
@@ -129,16 +128,15 @@ impl AudioSettings {
         NORMAL_VOLUME * u32::from(self.config.max_volume) / 100
     }
 
+    /// Microphone volume step; sinks use the configurable `volume_step`.
+    const MIC_VOLUME_STEP: u32 = 5 * VOL_PERCENT;
+
     pub fn volume_adjust(&mut self, up: bool) -> Action {
         let Some(cur) = self.real_sink_volume() else {
             return Action::None;
         };
         let step = u32::from(self.config.volume_step) * VOL_PERCENT;
-        let new_vol = if up {
-            (cur + step).min(self.vol_max())
-        } else {
-            cur.saturating_sub(step)
-        };
+        let new_vol = crate::utils::stepped_value(cur, up, step, self.vol_max());
         self.update(Message::SinkVolumeChanged(
             remote_value::Message::RequestAndTimeout(new_vol),
         ))
@@ -169,7 +167,7 @@ impl AudioSettings {
     pub fn real_source_volume(&self) -> Option<u32> {
         self.service
             .as_ref()
-            .and_then(|s| s.active_source().map(|d| d.volume.get_volume()))
+            .and_then(|s| s.active_source().map(|d| d.volume.volume()))
     }
 
     pub fn is_source_muted(&self) -> Option<bool> {
@@ -178,6 +176,8 @@ impl AudioSettings {
             .and_then(|s| s.active_source().map(|d| d.is_mute))
     }
 
+    /// Sinks allow configurable overdrive (`max_volume` above 100%); the
+    /// microphone has none, so its cap is the constant.
     pub fn mic_max() -> u32 {
         NORMAL_VOLUME
     }
@@ -186,12 +186,7 @@ impl AudioSettings {
         let Some(cur) = self.real_source_volume() else {
             return Action::None;
         };
-        let step = 5 * VOL_PERCENT;
-        let new_vol = if up {
-            (cur + step).min(Self::mic_max())
-        } else {
-            cur.saturating_sub(step)
-        };
+        let new_vol = crate::utils::stepped_value(cur, up, Self::MIC_VOLUME_STEP, Self::mic_max());
         self.update(Message::SourceVolumeChanged(
             remote_value::Message::RequestAndTimeout(new_vol),
         ))
@@ -211,28 +206,17 @@ impl AudioSettings {
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::Event(event) => match event {
-                ServiceEvent::Init(service) => {
-                    self.service = Some(service);
-
-                    Action::None
+            Message::Event(event) => {
+                let applied = event.apply(&mut self.service);
+                // Collapse an open submenu if its device list vanished.
+                if applied == crate::services::Applied::Updated
+                    && let Some(service) = &self.service
+                    && (!service.has_multiple_sinks() || !service.has_multiple_sources())
+                {
+                    return Action::CloseSubMenu;
                 }
-                ServiceEvent::Update(data) => {
-                    if let Some(service) = self.service.as_mut() {
-                        service.update(data);
-
-                        if !service.has_multiple_sinks() {
-                            return Action::CloseSubMenu;
-                        }
-
-                        if !service.has_multiple_sources() {
-                            return Action::CloseSubMenu;
-                        }
-                    }
-                    Action::None
-                }
-                ServiceEvent::Error(_) => Action::None,
-            },
+                Action::None
+            }
             Message::ToggleSinkMute => {
                 if let Some(service) = self.service.as_mut() {
                     let _ = service.command(AudioCommand::ToggleSinkMute);
@@ -286,33 +270,19 @@ impl AudioSettings {
                 Action::None
             }
             Message::OpenMore => {
-                if let Some(cmd) = &self.config.sinks_more_cmd {
+                if let Some(cmd) = Self::more_cmd(&self.config, SliderType::Sink) {
                     crate::utils::launcher::execute_command(cmd);
                 }
                 Action::None
             }
             Message::OpenSourceMore => {
-                if let Some(cmd) = &self.config.sources_more_cmd {
+                if let Some(cmd) = Self::more_cmd(&self.config, SliderType::Source) {
                     crate::utils::launcher::execute_command(cmd);
                 }
                 Action::None
             }
-            Message::SinksMore(id) => {
-                if let Some(cmd) = &self.config.sinks_more_cmd {
-                    crate::utils::launcher::execute_command(cmd);
-                    Action::CloseMenu(id)
-                } else {
-                    Action::None
-                }
-            }
-            Message::SourcesMore(id) => {
-                if let Some(cmd) = &self.config.sources_more_cmd {
-                    crate::utils::launcher::execute_command(cmd);
-                    Action::CloseMenu(id)
-                } else {
-                    Action::None
-                }
-            }
+            Message::SinksMore(id) => self.more(SliderType::Sink, id),
+            Message::SourcesMore(id) => self.more(SliderType::Source, id),
             Message::ToggleSinksMenu => Action::ToggleSinksMenu,
             Message::ToggleSourcesMenu => Action::ToggleSourcesMenu,
             Message::ConfigReloaded(config) => {
@@ -424,58 +394,83 @@ impl AudioSettings {
         }
     }
 
+    /// The configured external-tool command for a device kind, if any.
+    fn more_cmd(config: &AudioSettingsConfig, kind: SliderType) -> Option<&str> {
+        match kind {
+            SliderType::Sink => config.sinks_more_cmd.as_deref(),
+            SliderType::Source => config.sources_more_cmd.as_deref(),
+        }
+    }
+
+    /// Run the configured external-tool command for a device kind and close
+    /// the settings menu.
+    fn more(&self, kind: SliderType, id: SurfaceId) -> Action {
+        if let Some(cmd) = Self::more_cmd(&self.config, kind) {
+            crate::utils::launcher::execute_command(cmd);
+            Action::CloseMenu(id)
+        } else {
+            Action::None
+        }
+    }
+
+    /// Sink or source list for the audio submenu, parameterized by device
+    /// kind (default check, fallback icon and message constructor differ).
+    pub fn device_submenu<'a>(
+        &'a self,
+        id: SurfaceId,
+        kind: SliderType,
+    ) -> Option<Element<'a, Message>> {
+        let service = self.service.as_ref()?;
+
+        let entries: Vec<_> = match kind {
+            SliderType::Sink => service
+                .sink_iter()
+                .map(|route| SubmenuEntry {
+                    name: route.to_string(),
+                    icon: route
+                        .port
+                        .and_then(Self::port_icon)
+                        .unwrap_or(StaticIcon::Speaker3),
+                    active: route.device.name == service.server_info.default_sink,
+                    msg: Message::DefaultSinkChanged(
+                        route.device.name.clone(),
+                        route.port.map(|p| p.name.clone()),
+                    ),
+                })
+                .collect(),
+            SliderType::Source => service
+                .source_iter()
+                .map(|route| SubmenuEntry {
+                    name: route.to_string(),
+                    icon: route
+                        .port
+                        .and_then(Self::port_icon)
+                        .unwrap_or(StaticIcon::Mic1),
+                    active: route.device.name == service.server_info.default_source,
+                    msg: Message::DefaultSourceChanged(
+                        route.device.name.clone(),
+                        route.port.map(|p| p.name.clone()),
+                    ),
+                })
+                .collect(),
+        };
+
+        let more_msg = Self::more_cmd(&self.config, kind)
+            .is_some()
+            .then(|| match kind {
+                SliderType::Sink => Message::SinksMore(id),
+                SliderType::Source => Message::SourcesMore(id),
+            });
+
+        Some(Self::submenu(entries, more_msg))
+    }
+
     pub fn sinks_submenu<'a>(&'a self, id: SurfaceId) -> Option<Element<'a, Message>> {
-        self.service.as_ref().map(|service| {
-            Self::submenu(
-                service
-                    .sink_iter()
-                    .map(|route| SubmenuEntry {
-                        name: route.to_string(),
-                        icon: route
-                            .port
-                            .and_then(Self::port_icon)
-                            .unwrap_or(StaticIcon::Speaker3),
-                        active: route.device.name == service.server_info.default_sink,
-                        msg: Message::DefaultSinkChanged(
-                            route.device.name.clone(),
-                            route.port.map(|p| p.name.clone()),
-                        ),
-                    })
-                    .collect(),
-                if self.config.sinks_more_cmd.is_some() {
-                    Some(Message::SinksMore(id))
-                } else {
-                    None
-                },
-            )
-        })
+        self.device_submenu(id, SliderType::Sink)
     }
 
     pub fn sources_submenu<'a>(&'a self, id: SurfaceId) -> Option<Element<'a, Message>> {
-        self.service.as_ref().map(|service| {
-            Self::submenu(
-                service
-                    .source_iter()
-                    .map(|route| SubmenuEntry {
-                        name: route.to_string(),
-                        icon: route
-                            .port
-                            .and_then(Self::port_icon)
-                            .unwrap_or(StaticIcon::Mic1),
-                        active: route.device.name == service.server_info.default_source,
-                        msg: Message::DefaultSourceChanged(
-                            route.device.name.clone(),
-                            route.port.map(|p| p.name.clone()),
-                        ),
-                    })
-                    .collect(),
-                if self.config.sources_more_cmd.is_some() {
-                    Some(Message::SourcesMore(id))
-                } else {
-                    None
-                },
-            )
-        })
+        self.device_submenu(id, SliderType::Source)
     }
 
     fn port_icon(port: &Port) -> Option<StaticIcon> {
@@ -567,15 +562,8 @@ impl AudioSettings {
         F: Fn(remote_value::Message<u32>) -> Message,
     {
         move |delta| {
-            let y = match delta {
-                ScrollDelta::Lines { y, .. } => y,
-                ScrollDelta::Pixels { y, .. } => y,
-            };
-            let new_volume = if y > 0.0 {
-                (cur_volume + step).min(max)
-            } else {
-                cur_volume.saturating_sub(step)
-            };
+            let y = crate::utils::scroll_y(delta);
+            let new_volume = crate::utils::stepped_value(cur_volume, y > 0.0, step, max);
             make_msg(remote_value::Message::RequestAndTimeout(new_volume))
         }
     }
@@ -615,18 +603,7 @@ impl AudioSettings {
         .spacing(space.xxs)
         .into();
 
-        match more_msg {
-            Some(more_msg) => column!(
-                entries,
-                divider(),
-                styled_button(t!("settings-more"))
-                    .on_press(more_msg)
-                    .width(Length::Fill),
-            )
-            .spacing(space.sm)
-            .into(),
-            _ => entries,
-        }
+        crate::components::with_more_button(entries, more_msg)
     }
 
     pub fn subscription(&self) -> Subscription<Message> {

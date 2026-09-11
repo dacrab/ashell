@@ -1,3 +1,4 @@
+use super::impl_service_subscription;
 use super::xdg_icons;
 use super::{ReadOnlyService, Service, ServiceEvent};
 use dbus::{
@@ -5,18 +6,15 @@ use dbus::{
     StatusNotifierWatcherProxy,
 };
 use iced::{
-    Subscription, Task,
+    Task,
     futures::{
-        SinkExt, Stream, StreamExt,
-        channel::mpsc::Sender,
-        stream::{pending, select_all},
-        stream_select,
+        SinkExt, Stream, StreamExt, channel::mpsc::Sender, stream::select_all, stream_select,
     },
-    stream::channel,
     widget::image,
 };
 use log::{debug, error, info, trace};
-use std::{any::TypeId, ops::Deref};
+use std::{ops::Deref, time::Duration};
+use tokio::time::sleep;
 
 pub mod dbus;
 
@@ -79,7 +77,7 @@ async fn current_icon_from_proxy(item_proxy: &StatusNotifierItemProxy<'_>) -> Op
             .await
             .ok()
             .as_deref()
-            .and_then(xdg_icons::get_icon_from_name),
+            .and_then(xdg_icons::icon_from_name),
     }
 }
 
@@ -267,7 +265,7 @@ impl TrayService {
                                     .await
                                     .ok()
                                     .as_deref()
-                                    .and_then(xdg_icons::get_icon_from_name)
+                                    .and_then(xdg_icons::icon_from_name)
                                     .map(|icon| TrayEvent::IconChanged(name.to_owned(), icon))
                             }
                         }
@@ -402,10 +400,11 @@ impl TrayService {
                 }
             }
             State::Error => {
-                error!("Tray service error");
+                error!("Tray service error, retrying in 5 seconds");
 
-                let _ = pending::<u8>().next().await;
-                State::Error
+                sleep(Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }
@@ -469,17 +468,7 @@ impl ReadOnlyService for TrayService {
         }
     }
 
-    fn subscribe() -> iced::Subscription<ServiceEvent<Self>> {
-        Subscription::run_with(TypeId::of::<Self>(), |_| {
-            channel(100, async |mut output| {
-                let mut state = State::Init;
-
-                loop {
-                    state = TrayService::start_listening(state, &mut output).await;
-                }
-            })
-        })
-    }
+    impl_service_subscription!(TrayService, 100);
 }
 
 #[derive(Debug, Clone)]

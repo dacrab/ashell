@@ -1,18 +1,18 @@
+use super::impl_service_subscription;
 use super::{ReadOnlyService, ServiceEvent};
-use iced::{
-    Subscription,
-    futures::{
-        FutureExt, SinkExt, Stream, StreamExt, channel::mpsc::Sender, select, stream::pending,
-    },
-    stream::channel,
+use iced::futures::{
+    FutureExt, SinkExt, Stream, StreamExt, channel::mpsc::Sender, select, stream::pending,
 };
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info, warn};
 use pipewire::{context::ContextBox, main_loop::MainLoopBox};
 use std::{
-    any::TypeId, cell::RefCell, collections::HashSet, fs, ops::Deref, path::Path, rc::Rc, thread,
+    cell::RefCell, collections::HashSet, fs, ops::Deref, path::Path, rc::Rc, thread, time::Duration,
 };
-use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, unbounded_channel},
+    time::sleep,
+};
 
 const WEBCAM_DEVICE_PATH: &str = "/dev/video0";
 
@@ -131,7 +131,7 @@ impl PrivacyService {
                 })
                 .register();
 
-            boot_tx.send(Ok(())).unwrap();
+            let _ = boot_tx.send(Ok(()));
             mainloop.run();
 
             warn!("Pipewire mainloop exited");
@@ -242,10 +242,11 @@ impl PrivacyService {
                 State::Active((pipewire, webcam))
             }
             State::Error => {
-                error!("Privacy service error");
+                error!("Privacy service error, retrying in 5 seconds");
 
-                let _ = pending::<u8>().next().await;
-                State::Error
+                sleep(Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }
@@ -293,17 +294,7 @@ impl ReadOnlyService for PrivacyService {
         }
     }
 
-    fn subscribe() -> Subscription<ServiceEvent<Self>> {
-        Subscription::run_with(TypeId::of::<Self>(), |_| {
-            channel(100, async |mut output| {
-                let mut state = State::Init;
-
-                loop {
-                    state = PrivacyService::start_listening(state, &mut output).await;
-                }
-            })
-        })
-    }
+    impl_service_subscription!(PrivacyService, 100);
 }
 
 fn is_device_in_use(target: &str) -> i32 {
@@ -312,12 +303,11 @@ fn is_device_in_use(target: &str) -> i32 {
         for entry in entries.flatten() {
             let pid_path = entry.path();
 
-            // Skip non-numeric directories (not process folders)
+            // Skip /proc entries without an fd table (irq, sys, ... — not processes)
             if !pid_path.join("fd").exists() {
                 continue;
             }
 
-            // Check file descriptors in each process folder
             if let Ok(fd_entries) = fs::read_dir(pid_path.join("fd")) {
                 for fd_entry in fd_entries.flatten() {
                     if let Ok(link_path) = fs::read_link(fd_entry.path())

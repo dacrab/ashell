@@ -9,7 +9,7 @@ use iced::{Element, Subscription, Task, widget::text};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ServiceEvent(ServiceEvent<CompositorService>),
+    Event(Box<ServiceEvent<CompositorService>>),
     ChangeLayout,
     ConfigReloaded(KeyboardLayoutModuleConfig),
 }
@@ -29,23 +29,15 @@ impl KeyboardLayout {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ServiceEvent(event) => {
-                match event {
-                    ServiceEvent::Init(s) => self.service = Some(s),
-                    ServiceEvent::Update(e) => {
-                        if let Some(service) = &mut self.service {
-                            service.update(e);
-                        }
-                    }
-                    _ => {}
-                }
+            Message::Event(event) => {
+                event.apply(&mut self.service);
                 Task::none()
             }
             Message::ChangeLayout => {
                 if let Some(service) = &mut self.service {
                     return service
                         .command(CompositorCommand::NextLayout)
-                        .map(Message::ServiceEvent);
+                        .map(|event| Message::Event(Box::new(event)));
                 }
                 Task::none()
             }
@@ -66,17 +58,16 @@ impl KeyboardLayout {
         }
 
         // Fallback to displaying the layout ID/Name if no label config exists
-        let label = match self.config.labels.get(active_layout) {
-            Some(value) => value.to_string(),
-            None => active_layout.clone(),
-        };
+        let label: &str = self
+            .config
+            .labels
+            .get(active_layout)
+            .map_or(active_layout.as_str(), String::as_str);
 
-        // Returns plain text matching original implementation style.
-        // (Assuming parent container or mouse area handles interactions if any)
         Some(text(label).into())
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        CompositorService::subscribe().map(Message::ServiceEvent)
+        CompositorService::subscribe().map(|event| Message::Event(Box::new(event)))
     }
 }

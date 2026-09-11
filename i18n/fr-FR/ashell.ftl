@@ -103,6 +103,7 @@ settings-tooltip-empty-battery = Aucune information de batterie
 
 ## Module météo
 tempo-feels-like = Ressenti { $value }{ $unit }
+tempo-coordinates = Lat : { $lat }, Lon : { $lon }
 tempo-humidity = Humidité
 tempo-wind = Vent
 

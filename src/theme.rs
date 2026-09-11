@@ -1,3 +1,8 @@
+//! Theming: `AshellTheme` (built from the config, stored thread-locally) is
+//! read per frame via `use_theme`; iced itself only sees the per-surface
+//! `iced::Theme`. The `Paint` type encodes whether a colour is part of the
+//! surface (carries its opacity) or drawn on top of it.
+
 use std::cell::RefCell;
 
 use crate::{
@@ -22,15 +27,18 @@ thread_local! {
     pub static THEME: RefCell<AshellTheme> =  RefCell::new(AshellTheme::default());
 }
 
+/// Replace the active theme; called on startup and on every config reload.
 pub fn init_theme(theme: AshellTheme) {
     THEME.replace(theme);
 }
 
+/// Read the active [`AshellTheme`] for this thread. View code calls this
+/// every frame to resolve sizes, colors and styles outside iced's `Theme`
+/// styling callbacks.
 pub fn use_theme<R, F: FnOnce(&AshellTheme) -> R>(f: F) -> R {
     THEME.with_borrow(f)
 }
 
-#[allow(unused)]
 #[derive(Debug, Copy, Clone)]
 pub struct Space {
     pub xxs: f32,
@@ -71,7 +79,6 @@ impl Space {
     }
 }
 
-#[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 pub struct Radius {
     pub sm: f32,
@@ -131,10 +138,16 @@ impl BarLayout {
     }
 }
 
-#[allow(unused)]
+impl AshellTheme {
+    /// Layout geometry consumed together by the outputs sync/add/remove
+    /// paths: `(bar_layout, bar_position, scale_factor)`.
+    pub fn bar_geometry(&self) -> (BarLayout, Position, f64) {
+        (self.bar_layout(), self.bar_position, self.scale_factor)
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub struct FontSize {
-    pub xxs: f32,
     pub xs: f32,
     pub sm: f32,
     pub md: f32,
@@ -146,7 +159,6 @@ pub struct FontSize {
 impl Default for FontSize {
     fn default() -> Self {
         Self {
-            xxs: 8.0,
             xs: 10.0,
             sm: 12.0,
             md: 16.0,
@@ -363,12 +375,12 @@ pub fn card_style(radius: impl Into<border::Radius>) -> impl Fn(&Theme) -> conta
 
 fn base_palette(appearance: &Appearance) -> Palette {
     Palette {
-        background: appearance.background_color.get_base(),
-        text: appearance.text_color.get_base(),
-        primary: appearance.primary_color.get_base(),
-        success: appearance.success_color.get_base(),
-        warning: appearance.warning_color.get_base(),
-        danger: appearance.danger_color.get_base(),
+        background: appearance.background_color.base(),
+        text: appearance.text_color.base(),
+        primary: appearance.primary_color.base(),
+        success: appearance.success_color.base(),
+        warning: appearance.warning_color.base(),
+        danger: appearance.danger_color.base(),
     }
 }
 
@@ -377,7 +389,7 @@ fn base_palette(appearance: &Appearance) -> Palette {
 /// generated once and shared by all four surface themes.
 fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extended {
     let text = palette.text;
-    let bg_text = appearance.background_color.get_text().unwrap_or(text);
+    let bg_text = appearance.background_color.text().unwrap_or(text);
     // `mix` interpolates alpha too, so deriving from the translucent
     // colour would spread assorted alphas across the variants.
     let background = Color {
@@ -389,29 +401,29 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
     let bg = |level, fallback| {
         appearance
             .background_color
-            .get_pair(level, text)
+            .pair(level, text)
             .unwrap_or(fallback)
     };
 
     let default_primary = palette::Primary::generate(
         palette.primary,
         background,
-        appearance.primary_color.get_text().unwrap_or(text),
+        appearance.primary_color.text().unwrap_or(text),
     );
     let default_success = palette::Success::generate(
         palette.success,
         background,
-        appearance.success_color.get_text().unwrap_or(text),
+        appearance.success_color.text().unwrap_or(text),
     );
     let default_warning = palette::Warning::generate(
         palette.warning,
         background,
-        appearance.warning_color.get_text().unwrap_or(text),
+        appearance.warning_color.text().unwrap_or(text),
     );
     let default_danger = palette::Danger::generate(
         palette.danger,
         background,
-        appearance.danger_color.get_text().unwrap_or(text),
+        appearance.danger_color.text().unwrap_or(text),
     );
 
     palette::Extended {
@@ -429,11 +441,11 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
             base: default_primary.base,
             weak: appearance
                 .primary_color
-                .get_weak_pair(text)
+                .weak_pair(text)
                 .unwrap_or(default_primary.weak),
             strong: appearance
                 .primary_color
-                .get_strong_pair(text)
+                .strong_pair(text)
                 .unwrap_or(default_primary.strong),
         },
         secondary: palette::Secondary::generate(background, text),
@@ -441,33 +453,33 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
             base: default_success.base,
             weak: appearance
                 .success_color
-                .get_weak_pair(text)
+                .weak_pair(text)
                 .unwrap_or(default_success.weak),
             strong: appearance
                 .success_color
-                .get_strong_pair(text)
+                .strong_pair(text)
                 .unwrap_or(default_success.strong),
         },
         warning: palette::Warning {
             base: default_warning.base,
             weak: appearance
                 .warning_color
-                .get_weak_pair(text)
+                .weak_pair(text)
                 .unwrap_or(default_warning.weak),
             strong: appearance
                 .warning_color
-                .get_strong_pair(text)
+                .strong_pair(text)
                 .unwrap_or(default_warning.strong),
         },
         danger: palette::Danger {
             base: default_danger.base,
             weak: appearance
                 .danger_color
-                .get_weak_pair(text)
+                .weak_pair(text)
                 .unwrap_or(default_danger.weak),
             strong: appearance
                 .danger_color
-                .get_strong_pair(text)
+                .strong_pair(text)
                 .unwrap_or(default_danger.strong),
         },
         is_dark: true,
@@ -622,7 +634,7 @@ impl AshellTheme {
                             .background
                             .base
                             .text
-                            .scale_alpha(0.04)
+                            .scale_alpha(HOVER_OVERLAY)
                             .into(),
                     ),
                     border: Border {
@@ -799,9 +811,9 @@ impl AshellTheme {
                     || theme.extended_palette().primary,
                     |c| {
                         palette::Primary::generate(
-                            c.get_base(),
+                            c.base(),
                             theme.palette().background,
-                            c.get_text().unwrap_or_else(|| theme.palette().text),
+                            c.text().unwrap_or_else(|| theme.palette().text),
                         )
                     },
                 )

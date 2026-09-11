@@ -3,7 +3,6 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
-use std::str;
 
 use allsorts::binary::read::ReadScope;
 use allsorts::error::ParseError;
@@ -35,6 +34,12 @@ pub fn main() -> Result<(), Box<dyn Error>> {
     let source = "src/components/icons.rs";
     let input = "assets/SymbolsNerdFont-Regular.ttf";
     let input_mono = "assets/SymbolsNerdFontMono-Regular.ttf";
+
+    // Only re-run the (expensive) font subsetting when these inputs change;
+    // without this, any package file change re-triggers the whole script.
+    println!("cargo:rerun-if-changed={source}");
+    println!("cargo:rerun-if-changed={input}");
+    println!("cargo:rerun-if-changed={input_mono}");
 
     let output = "target/generated/SymbolsNerdFont-Regular-Subset.ttf";
     let output_mono = "target/generated/SymbolsNerdFontMono-Regular-Subset.ttf";
@@ -141,7 +146,7 @@ fn chars_to_glyphs<F: FontTableProvider>(
     Ok(glyphs)
 }
 
-pub(crate) fn map(
+fn map(
     cmap_subtable: &CmapSubtable,
     ch: char,
     variation: Option<VariationSelector>,
@@ -154,11 +159,7 @@ pub(crate) fn map(
     }
 }
 
-pub(crate) fn make(
-    ch: char,
-    glyph_index: u16,
-    variation: Option<VariationSelector>,
-) -> RawGlyph<()> {
+fn make(ch: char, glyph_index: u16, variation: Option<VariationSelector>) -> RawGlyph<()> {
     RawGlyph {
         unicodes: tiny_vec![[char; 1] => ch],
         glyph_index,

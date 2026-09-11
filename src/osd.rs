@@ -1,4 +1,12 @@
+//! The on-screen display: a transient bottom-anchored overlay for volume,
+//! brightness and toggle events (typically from IPC). Not a bar module —
+//! `Action::Show`/`Hide` tell the app to create/destroy the overlay surface.
+
 use std::time::Duration;
+
+/// OSD progress bar dimensions.
+const OSD_BAR_LENGTH: f32 = 160.0;
+const OSD_BAR_GIRTH: f32 = 8.0;
 
 use iced::{
     Alignment, Element, Length, Task, Theme,
@@ -8,7 +16,7 @@ use tokio::time::sleep;
 
 use crate::{
     components::icons::{Icon, StaticIcon},
-    config::{OsdConfig, Surface},
+    config::{OsdModuleConfig, Surface},
     modules::settings::audio::AudioSettings,
     modules::settings::network::NetworkSettings,
     services::idle_inhibitor::IdleInhibitorManager,
@@ -17,7 +25,7 @@ use crate::{
 };
 
 pub struct Osd {
-    config: OsdConfig,
+    config: OsdModuleConfig,
     state: Option<OsdState>,
     timeout_handle: Option<iced::task::Handle>,
 }
@@ -48,7 +56,7 @@ pub enum Message {
         muted: bool,
     },
     Hide,
-    ConfigReloaded(OsdConfig),
+    ConfigReloaded(OsdModuleConfig),
 }
 
 pub enum Action {
@@ -61,7 +69,7 @@ pub enum Action {
 }
 
 impl Osd {
-    pub fn new(config: OsdConfig) -> Self {
+    pub fn new(config: OsdModuleConfig) -> Self {
         Self {
             config,
             state: None,
@@ -69,7 +77,7 @@ impl Osd {
         }
     }
 
-    pub fn config(&self) -> &OsdConfig {
+    pub fn config(&self) -> &OsdModuleConfig {
         &self.config
     }
 
@@ -147,8 +155,8 @@ impl Osd {
         let detail: Element<'_, Message> = match state.kind {
             OsdKind::Volume | OsdKind::Microphone | OsdKind::Brightness => {
                 let bar = progress_bar(0.0..=state.scale, state.value)
-                    .length(160.0)
-                    .girth(8.0);
+                    .length(OSD_BAR_LENGTH)
+                    .girth(OSD_BAR_GIRTH);
                 let bar = if state.muted {
                     bar.style(crate::theme::progress_bar_secondary)
                 } else if overdrive {

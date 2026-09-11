@@ -2,7 +2,7 @@ use crate::{
     components::divider,
     components::icons::{StaticIcon, icon, icon_button},
     components::scrollable,
-    components::{ButtonSize, MenuSize},
+    components::{ButtonSize, MenuSize, menu::MAX_MENU_HEIGHT},
     config::{
         MediaPlayerFormat, MediaPlayerModuleConfig, MediaPlayerTextField, MediaPlayerVisualizer,
     },
@@ -187,7 +187,8 @@ impl MediaPlayer {
     }
 
     fn is_playing(&self) -> bool {
-        self.active_player().map(|p| p.state) == Some(PlaybackStatus::Playing)
+        self.active_player()
+            .is_some_and(|p| p.state == PlaybackStatus::Playing)
     }
 
     /// `menu_visualizer` only draws inside the menu, so it must not keep cava
@@ -206,22 +207,14 @@ impl MediaPlayer {
             Message::SetVolume(s, v) => {
                 Action::Command(self.handle_command(s, PlayerCommand::Volume(v)))
             }
-            Message::Event(event) => match event {
-                ServiceEvent::Init(s) => {
-                    self.service = Some(s);
-                    Action::None
+            Message::Event(event) => {
+                if event.apply(&mut self.service) == crate::services::Applied::Updated
+                    && !self.is_playing()
+                {
+                    self.bars.clear();
                 }
-                ServiceEvent::Update(d) => {
-                    if let Some(service) = self.service.as_mut() {
-                        service.update(d);
-                    }
-                    if !self.is_playing() {
-                        self.bars.clear();
-                    }
-                    Action::None
-                }
-                ServiceEvent::Error(_) => Action::None,
-            },
+                Action::None
+            }
             Message::ConfigReloaded(c) => {
                 self.config = c;
                 Action::None
@@ -316,7 +309,7 @@ impl MediaPlayer {
                                     .and_then(|m| m.art_url.as_ref())
                                     .map(|url| {
                                         let inner: Element<'_, _> = service
-                                            .get_cover(url)
+                                            .cover(url)
                                             .map(|handle| {
                                                 image(handle)
                                                     .filter_method(image::FilterMethod::Linear)
@@ -395,7 +388,7 @@ impl MediaPlayer {
                     }))
                     .spacing(space.md)
                 ))
-                .max_height(600)
+                .max_height(MAX_MENU_HEIGHT)
             )
             .spacing(space.xs)
             .into(),

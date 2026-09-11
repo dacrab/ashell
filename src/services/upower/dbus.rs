@@ -195,12 +195,6 @@ impl TryFrom<u32> for DeviceState {
     }
 }
 
-impl From<DeviceState> for u32 {
-    fn from(state: DeviceState) -> Self {
-        state as u32
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
 pub enum UpDeviceKind {
@@ -251,11 +245,6 @@ impl UpDeviceKind {
         }
     }
 
-    /// Convert to u32.
-    pub fn to_u32(self) -> u32 {
-        self as u32
-    }
-
     /// Check if this device type is a peripheral input device.
     pub fn is_peripheral(self) -> bool {
         matches!(
@@ -302,13 +291,6 @@ impl UpDeviceKind {
 impl std::fmt::Display for UpDeviceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.description())
-    }
-}
-
-impl From<UpDeviceKind> for u32 {
-    #[inline]
-    fn from(kind: UpDeviceKind) -> Self {
-        kind.to_u32()
     }
 }
 

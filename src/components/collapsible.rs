@@ -8,9 +8,9 @@ use iced::{
 };
 use std::time::{Duration, Instant};
 
-type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
+use crate::components::ANIMATION_DURATION;
 
-pub const DEFAULT_DURATION: Duration = Duration::from_millis(100);
+type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
 
 struct State {
     height_anim: Animation<f32>,
@@ -321,7 +321,7 @@ where
     Collapsible {
         content: content.into(),
         expanded,
-        duration: DEFAULT_DURATION,
+        duration: ANIMATION_DURATION,
         easing: Easing::EaseOutCubic,
         animated: true,
         key: 0,

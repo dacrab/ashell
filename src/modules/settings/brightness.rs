@@ -17,7 +17,7 @@ use iced::{
 #[derive(Debug, Clone)]
 pub enum Message {
     Event(ServiceEvent<BrightnessService>),
-    Changed(remote_value::Message<u32>),
+    BrightnessChanged(remote_value::Message<u32>),
     MenuOpened,
     ConfigReloaded(SettingsFormat),
 }
@@ -53,53 +53,38 @@ impl BrightnessSettings {
             return Action::None;
         };
         let step = Self::step(max);
-        let new_val = if up {
-            (cur + step).min(max)
-        } else {
-            cur.saturating_sub(step)
-        };
-        self.update(Message::Changed(remote_value::Message::RequestAndTimeout(
-            new_val,
-        )))
+        let new_val = crate::utils::stepped_value(cur, up, step, max);
+        self.update(Message::BrightnessChanged(
+            remote_value::Message::RequestAndTimeout(new_val),
+        ))
     }
 
     fn on_scroll(current: u32, max: u32) -> impl Fn(ScrollDelta) -> Message {
         move |delta| {
-            let y = match delta {
-                ScrollDelta::Lines { y, .. } => y,
-                ScrollDelta::Pixels { y, .. } => y,
-            };
+            let y = crate::utils::scroll_y(delta);
             let step = Self::step(max);
-            let new = if y > 0.0 {
-                (current + step).min(max)
-            } else {
-                current.saturating_sub(step)
-            };
-            Message::Changed(remote_value::Message::RequestAndTimeout(new))
+            let new = crate::utils::stepped_value(current, y > 0.0, step, max);
+            Message::BrightnessChanged(remote_value::Message::RequestAndTimeout(new))
         }
     }
 
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::Event(event) => match event {
-                ServiceEvent::Init(service) => {
-                    self.service = Some(service);
-                    Action::None
-                }
-                ServiceEvent::Update(data) => {
-                    if let Some(service) = self.service.as_mut() {
-                        service.update(data);
-                    }
-                    Action::None
-                }
-                _ => Action::None,
-            },
-            Message::Changed(message) => {
+            Message::Event(event) => {
+                event.apply(&mut self.service);
+                Action::None
+            }
+            Message::BrightnessChanged(message) => {
                 if let Some(service) = self.service.as_mut() {
                     if let Some(value) = message.value() {
                         let _ = service.command(BrightnessCommand(value));
                     }
-                    return Action::Command(service.current.update(message).map(Message::Changed));
+                    return Action::Command(
+                        service
+                            .current
+                            .update(message)
+                            .map(Message::BrightnessChanged),
+                    );
                 }
                 Action::None
             }
@@ -122,7 +107,7 @@ impl BrightnessSettings {
                 StaticIcon::Brightness,
                 0..=service.max,
                 service.current.value(),
-                Message::Changed,
+                Message::BrightnessChanged,
                 Self::on_scroll(service.current.value(), service.max),
             )
             .into()

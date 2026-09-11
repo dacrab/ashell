@@ -309,8 +309,6 @@ pub trait DBusMenu {
     fn event(&self, id: i32, event_id: &str, data: &OwnedValue, timestamp: u32)
     -> zbus::Result<()>;
 
-    fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
-
     #[zbus(signal)]
     fn layout_updated(&self, revision: u32, parent: i32) -> zbus::Result<()>;
 }

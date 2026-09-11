@@ -7,6 +7,11 @@ use crate::{
 };
 use iced::{OutputEvent, SurfaceId};
 
+// `Settings(modules::settings::Message)` dominates real-world usage and that
+// enum is inherently large (it wraps every settings sub-menu); the remaining
+// variants are cheap. The size difference is acceptable because this enum is
+// passed by value only between iced and `App::update`, never stored.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Message {
     ConfigChanged(Box<Config>),

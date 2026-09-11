@@ -1,9 +1,9 @@
 use crate::{
-    components::collapsible::{self, collapsible},
+    components::collapsible::collapsible,
     components::icons::{StaticIcon, icon, icon_button},
     components::scrollable,
-    components::slide::{self, SlideDirection, slide},
-    components::{ButtonHierarchy, ButtonKind, ButtonSize, MenuSize},
+    components::slide::{SlideDirection, slide},
+    components::{ANIMATION_DURATION, ButtonHierarchy, ButtonKind, ButtonSize, MenuSize},
     config::{NotificationsModuleConfig, Surface, ToastPosition},
     services::{
         ReadOnlyService, ServiceEvent,
@@ -131,8 +131,10 @@ pub enum Action {
 }
 
 // Must match the widget durations so task delays align with animation end.
-const SLIDE_ANIMATION: Duration = slide::DEFAULT_DURATION;
-const COLLAPSE_ANIMATION: Duration = collapsible::DEFAULT_DURATION;
+const SLIDE_ANIMATION: Duration = ANIMATION_DURATION;
+const COLLAPSE_ANIMATION: Duration = ANIMATION_DURATION;
+
+const HISTORY_MENU_MAX_HEIGHT: f32 = 400.;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DismissPhase {
@@ -149,6 +151,9 @@ pub struct Notifications {
     toasts: VecDeque<u32>,
     dismiss_phases: HashMap<u32, DismissPhase>,
     toast_timers: HashMap<u32, Instant>,
+    /// Pre-formatted timestamp strings by notification id, computed once at
+    /// insertion instead of re-formatting with chrono on every frame.
+    formatted_timestamps: HashMap<u32, String>,
     animations_enabled: bool,
 }
 
@@ -164,6 +169,7 @@ impl Notifications {
             toasts: VecDeque::new(),
             dismiss_phases: HashMap::new(),
             toast_timers: HashMap::new(),
+            formatted_timestamps: HashMap::new(),
             animations_enabled,
         }
     }
@@ -309,10 +315,22 @@ impl Notifications {
         match update_event {
             NotificationEvent::Received(notification) => {
                 self.notifications.retain(|n| n.id != notification.id);
+                // Pre-format the timestamp once; the view would otherwise
+                // re-format it with chrono on every frame.
+                self.formatted_timestamps.insert(
+                    notification.id,
+                    self.format_timestamp(notification.timestamp),
+                );
                 self.notifications.push_front(*notification);
+                // Bound history so a spammy app can't grow the deque forever.
+                const MAX_HISTORY: usize = 500;
+                while self.notifications.len() > MAX_HISTORY {
+                    self.notifications.pop_back();
+                }
             }
             NotificationEvent::Closed(id) => {
                 self.notifications.retain(|n| n.id != id);
+                self.formatted_timestamps.remove(&id);
             }
         }
     }
@@ -322,6 +340,8 @@ impl Notifications {
             Message::ConfigReloaded(config) => {
                 let hide = !config.toast && self.config.toast && !self.toasts.is_empty();
                 self.blocklist = config.blocklist.clone();
+                // The timestamp format may have changed; drop cached strings.
+                self.formatted_timestamps.clear();
                 self.config = config;
                 if hide {
                     self.clear_toasts();
@@ -369,6 +389,7 @@ impl Notifications {
             }
             Message::NotificationsCleared => {
                 let had_toasts = self.clear_toasts();
+                self.formatted_timestamps.clear();
                 self.hide_toasts_if_empty(had_toasts)
             }
             Message::ClearGroup(app_name) => {
@@ -478,6 +499,15 @@ impl Notifications {
         }
     }
 
+    /// Cached formatted timestamp for a notification. Formatted at insertion;
+    /// the fallback only exists for entries that somehow predate the cache.
+    fn formatted_timestamp(&self, id: u32, timestamp: std::time::SystemTime) -> String {
+        self.formatted_timestamps
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| self.format_timestamp(timestamp))
+    }
+
     fn format_timestamp(&self, timestamp: std::time::SystemTime) -> String {
         let datetime: DateTime<Local> = timestamp.into();
         datetime.format(&self.config.format).to_string()
@@ -546,8 +576,11 @@ impl Notifications {
         let (space, font_size) = use_theme(|t| (t.space, t.font_size));
         let timestamp_element = if self.config.show_timestamps {
             Some(
-                container(text(self.format_timestamp(notification.timestamp)).size(font_size.xs))
-                    .padding([0., space.xxs]),
+                container(
+                    text(self.formatted_timestamp(notification.id, notification.timestamp))
+                        .size(font_size.xs),
+                )
+                .padding([0., space.xxs]),
             )
         } else {
             None
@@ -631,7 +664,8 @@ impl Notifications {
                     text(&notification.summary)
                         .wrapping(text::Wrapping::WordOrGlyph)
                         .width(Length::Fill),
-                    text(self.format_timestamp(notification.timestamp)).size(font_size.sm)
+                    text(self.formatted_timestamp(notification.id, notification.timestamp))
+                        .size(font_size.sm)
                 ),
                 text(&notification.body).wrapping(text::Wrapping::WordOrGlyph)
             )
@@ -684,7 +718,7 @@ impl Notifications {
                 .push((!is_empty).then(|| {
                     icon_button(StaticIcon::Delete).on_press(Message::ClearNotifications)
                 })),
-            container(scrollable(content).spacing(space.xs)).max_height(400.),
+            container(scrollable(content).spacing(space.xs)).max_height(HISTORY_MENU_MAX_HEIGHT),
         )
         .width(MenuSize::Medium)
         .spacing(space.sm)
@@ -775,7 +809,7 @@ impl Notifications {
             .notifications
             .iter()
             .sorted_by(|a, b| a.app_name.cmp(&b.app_name))
-            .chunk_by(|n| n.app_name.clone())
+            .chunk_by(|n| n.app_name.as_str())
             .into_iter()
         {
             let mut iter = group.peekable();

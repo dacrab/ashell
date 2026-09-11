@@ -130,29 +130,27 @@ impl BluetoothDbus<'_> {
         Ok(devices)
     }
 
-    pub async fn pair_device(&self, device_path: &OwnedObjectPath) -> zbus::Result<()> {
-        let device = DeviceProxy::builder(self.bluez.inner().connection())
-            .path(device_path)?
+    async fn device<'a>(&'a self, path: &'a OwnedObjectPath) -> zbus::Result<DeviceProxy<'a>> {
+        DeviceProxy::builder(self.bluez.inner().connection())
+            .path(path)?
             .build()
-            .await?;
+            .await
+    }
+
+    pub async fn pair_device(&self, device_path: &OwnedObjectPath) -> zbus::Result<()> {
+        let device = self.device(device_path).await?;
 
         device.pair().await
     }
 
     pub async fn connect_device(&self, device_path: &OwnedObjectPath) -> zbus::Result<()> {
-        let device = DeviceProxy::builder(self.bluez.inner().connection())
-            .path(device_path)?
-            .build()
-            .await?;
+        let device = self.device(device_path).await?;
 
         device.connect().await
     }
 
     pub async fn disconnect_device(&self, device_path: &OwnedObjectPath) -> zbus::Result<()> {
-        let device = DeviceProxy::builder(self.bluez.inner().connection())
-            .path(device_path)?
-            .build()
-            .await?;
+        let device = self.device(device_path).await?;
 
         device.disconnect().await
     }

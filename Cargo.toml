@@ -110,12 +110,3 @@ softbuffer = { git = "https://github.com/MalpenZibo/softbuffer", branch = "wayla
 
 [build-dependencies]
 allsorts = "0.17"
-
-[package.metadata.rpm]
-package = "ashell"
-
-[package.metadata.rpm.cargo]
-buildflags = ["--release"]
-
-[package.metadata.rpm.targets]
-ashell = { path = "/usr/bin/ashell" }

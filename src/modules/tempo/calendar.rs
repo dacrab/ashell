@@ -89,9 +89,10 @@ impl Tempo {
 
     fn calendar_with_theme<'a>(&'a self, theme: &AshellTheme) -> Element<'a, Message> {
         let locale = chrono_locale();
-        let selected_date = self
-            .selected_date
-            .unwrap_or(self.naive_date(self.current_timezone_index));
+        // Resolve today once per render: naive_date parses the timezone
+        // string, so calling it per day cell is needlessly expensive.
+        let today = self.naive_date(self.current_timezone_index);
+        let selected_date = self.selected_date.unwrap_or(today);
 
         let current_month = selected_date.month0();
         let first_day_month = selected_date.with_day0(0).unwrap_or_default();
@@ -172,9 +173,7 @@ impl Tempo {
                                         text(day.format_localized("%-d", locale).to_string())
                                             .align_x(Horizontal::Center)
                                             .color_maybe({
-                                                if day
-                                                    == self.naive_date(self.current_timezone_index)
-                                                {
+                                                if day == today {
                                                     Some(theme.palette.success)
                                                 } else if day == selected_date {
                                                     Some(theme.palette.primary)
@@ -185,13 +184,11 @@ impl Tempo {
                                                 }
                                             }),
                                     ))
-                                    .on_press_maybe(
-                                        if day != self.naive_date(self.current_timezone_index) {
-                                            Some(Message::ChangeSelectDate(Some(day)))
-                                        } else {
-                                            None
-                                        },
-                                    )
+                                    .on_press_maybe(if day != today {
+                                        Some(Message::ChangeSelectDate(Some(day)))
+                                    } else {
+                                        None
+                                    })
                                     .size(ButtonSize::Small)
                                     .width(Length::Fill)
                                     .into()

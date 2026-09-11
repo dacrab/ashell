@@ -7,7 +7,7 @@ use std::path::PathBuf;
 // files and other file objects (such as sockets, named pipes, ...) should be stored.
 // The directory MUST be owned by the user, and they MUST be the only one having read and write
 // access to it. Its Unix access mode MUST be 0700.
-pub fn get_runtime_dir() -> Option<PathBuf> {
+pub fn runtime_dir() -> Option<PathBuf> {
     let runtime_dir = PathBuf::from(env::var_os("XDG_RUNTIME_DIR")?);
     let metadata = runtime_dir.metadata().ok()?;
     let uid = unsafe { libc::geteuid() };

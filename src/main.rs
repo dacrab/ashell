@@ -1,4 +1,4 @@
-use crate::config::{LogTarget, Position, get_config};
+use crate::config::{LogTarget, Position, load};
 use crate::outputs::Outputs;
 use crate::theme::BarLayout;
 use app::App;
@@ -33,7 +33,11 @@ const NERD_FONT_MONO: &[u8] =
     include_bytes!("../target/generated/SymbolsNerdFontMono-Regular-Subset.ttf");
 const CUSTOM_FONT: &[u8] = include_bytes!("../assets/AshellCustomIcon-Regular.otf");
 const HEIGHT: f64 = 34.;
-const TMP_FILE_SIZE: u64 = 10 * 1024 * 1024;
+/// A solid bar is inset by this amount inside the bar height. Must stay in
+/// sync with `space.xs` in theme.rs, which is defined independently.
+const SOLID_BAR_INSET: f64 = 8.;
+/// Rotate the log file once it reaches this size.
+const LOG_ROTATION_MAX_SIZE: u64 = 10 * 1024 * 1024;
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_HASH"), ")");
 
 #[derive(Parser, Debug)]
@@ -55,7 +59,7 @@ enum Command {
     },
 }
 
-fn get_log_spec(log_level: &str) -> LogSpecification {
+fn log_spec_for(log_level: &str) -> LogSpecification {
     let new_spec = LogSpecification::env_or_parse(log_level);
 
     match new_spec {
@@ -192,7 +196,7 @@ fn main() -> iced::Result {
 
     debug!("args: {args:?}");
 
-    let log_prefs = config::read_logging_config(args.config_path.as_ref());
+    let log_prefs = config::read_logging_config(args.config_path.as_deref());
 
     let log_spec = LogSpecBuilder::new()
         .default(log::LevelFilter::Info)
@@ -201,7 +205,7 @@ fn main() -> iced::Result {
         LogTarget::File => Logger::with(log_spec)
             .log_to_file(FileSpec::default().directory(log_prefs.log_directory()))
             .rotate(
-                Criterion::AgeOrSize(Age::Day, TMP_FILE_SIZE),
+                Criterion::AgeOrSize(Age::Day, LOG_ROTATION_MAX_SIZE),
                 Naming::Timestamps,
                 Cleanup::KeepLogFiles(7),
             ),
@@ -230,13 +234,13 @@ fn main() -> iced::Result {
 
     info!("ashell {VERSION}");
 
-    let (config, config_path) = get_config(args.config_path).unwrap_or_else(|err| {
+    let (config, config_path) = load(args.config_path).unwrap_or_else(|err| {
         error!("Failed to read config: {err}");
 
         std::process::exit(1);
     });
 
-    logger.set_new_spec(get_log_spec(&config.logging.level));
+    logger.set_new_spec(log_spec_for(&config.logging.level));
 
     let font = if let Some(font_name) = &config.appearance.font_name {
         resolve_font(font_name)
@@ -245,7 +249,7 @@ fn main() -> iced::Result {
     };
 
     let bar_layout = BarLayout::from_appearance(&config.appearance.bar);
-    let height = Outputs::get_height(bar_layout.surface, config.appearance.scale_factor);
+    let height = Outputs::height(bar_layout.surface, config.appearance.scale_factor);
 
     let iced_layer = match config.layer {
         config::Layer::Top => Layer::Top,

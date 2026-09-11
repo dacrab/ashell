@@ -1,5 +1,5 @@
 use crate::{
-    components::button::{ButtonHierarchy, ButtonKind, ButtonSize, OnPress},
+    components::button::{ButtonHierarchy, ButtonKind, ButtonSize},
     theme::use_theme,
 };
 use iced::{
@@ -18,7 +18,6 @@ pub trait Icon {
 }
 
 #[derive(Debug, Copy, Clone, Default)]
-#[allow(dead_code)]
 pub enum StaticIcon {
     #[default]
     None,
@@ -348,7 +347,6 @@ impl IconKind {
 
 impl Icon for IconKind {
     fn to_text<'a>(self) -> Text<'a> {
-        // Call the inherent method via explicit disambiguation
         match self {
             IconKind::Static(s) => s.to_text(),
             IconKind::Dynamic(s) => DynamicIcon(s).to_text(),
@@ -375,7 +373,7 @@ pub type StyleFn<'a, Theme> = Box<dyn for<'b> Fn(&'b Theme, Status) -> Style + '
 
 pub struct IconButton<'a, I: Icon, Message> {
     icon: I,
-    on_press: Option<OnPress<Message>>,
+    on_press: Option<Message>,
     kind: ButtonKind,
     hierarchy: ButtonHierarchy,
     style_override: Option<StyleFn<'a, Theme>>,
@@ -385,7 +383,7 @@ pub struct IconButton<'a, I: Icon, Message> {
 
 impl<'a, I: Icon, Message> IconButton<'a, I, Message> {
     pub fn on_press(mut self, on_press: Message) -> Self {
-        self.on_press = Some(OnPress::Direct(on_press));
+        self.on_press = Some(on_press);
         self
     }
 
@@ -462,7 +460,7 @@ impl<'a, I: Icon, Message: 'static + Clone> From<IconButton<'a, I, Message>>
         .style(style);
 
         let btn = match value.on_press {
-            Some(OnPress::Direct(message)) => btn.on_press(message),
+            Some(message) => btn.on_press(message),
             None => btn,
         };
 

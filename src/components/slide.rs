@@ -8,6 +8,8 @@ use iced::{
 };
 use std::time::{Duration, Instant};
 
+use crate::components::ANIMATION_DURATION;
+
 type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
 
 #[derive(Debug, Clone, Copy)]
@@ -22,8 +24,6 @@ struct State {
     initialized: bool,
     key: u64,
 }
-
-pub const DEFAULT_DURATION: Duration = Duration::from_millis(100);
 
 pub struct Slide<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where
@@ -291,7 +291,7 @@ where
         visible,
         direction,
         slide_distance,
-        duration: DEFAULT_DURATION,
+        duration: ANIMATION_DURATION,
         key: 0,
         animated: true,
     }

@@ -104,6 +104,7 @@ settings-tooltip-empty-battery = No battery information
 
 ## Tempo / weather module
 tempo-feels-like = Feels like { $value }{ $unit }
+tempo-coordinates = Lat: { $lat }, Lon: { $lon }
 tempo-humidity = Humidity
 tempo-wind = Wind
 

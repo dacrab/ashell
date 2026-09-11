@@ -29,6 +29,10 @@ use tokio::{
 pub struct Custom {
     pub config: CustomModuleDef,
     data: CustomListenData,
+    /// Icon and alert resolved from the regex maps on data change, so
+    /// `view()` doesn't run regexes per frame.
+    resolved_icon: Option<String>,
+    resolved_alert: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -47,7 +51,6 @@ pub enum Message {
     Update(CustomListenData),
 }
 
-// Define a struct for the canvas program
 #[derive(Debug, Clone, Copy, Default)]
 struct AlertIndicator;
 
@@ -64,8 +67,7 @@ impl<Message> Program<Message> for AlertIndicator {
     ) -> Vec<Geometry> {
         let geometry = cache.draw(renderer, bounds.size(), |frame| {
             let center = frame.center();
-            // Use a smaller radius so the circle doesn't touch the canvas edges
-            let radius = 2.0; // Creates a 4px diameter circle
+            let radius = 2.0;
             let circle = Path::circle(center, radius);
             frame.fill(&circle, theme.palette().danger);
         });
@@ -76,10 +78,29 @@ impl<Message> Program<Message> for AlertIndicator {
 
 impl Custom {
     pub fn new(config: CustomModuleDef) -> Self {
-        Self {
+        let mut custom = Self {
             config,
             data: CustomListenData::default(),
-        }
+            resolved_icon: None,
+            resolved_alert: false,
+        };
+        custom.resolve();
+        custom
+    }
+
+    /// Re-resolve the regex-driven icon and alert from the current data.
+    fn resolve(&mut self) {
+        self.resolved_icon = self.config.icons.as_ref().and_then(|icons_map| {
+            icons_map
+                .iter()
+                .find(|(re, _)| re.is_match(&self.data.alt))
+                .map(|(_, icon_str)| icon_str.clone())
+        });
+        self.resolved_alert = self
+            .config
+            .alert
+            .as_ref()
+            .is_some_and(|re| re.is_match(&self.data.alt));
     }
 
     pub fn module_type(&self) -> crate::config::CustomModuleType {
@@ -115,6 +136,7 @@ impl Custom {
             }
             Message::Update(data) => {
                 self.data = data;
+                self.resolve();
             }
         }
     }
@@ -125,69 +147,45 @@ impl Custom {
             crate::config::CustomModuleType::Text => self
                 .data
                 .text
-                .as_ref()
-                .and_then(|text_content| {
-                    if !text_content.is_empty() {
-                        Some(text(text_content.clone()).into())
-                    } else {
-                        None
-                    }
-                })
+                .as_deref()
+                .filter(|text_content| !text_content.is_empty())
+                .map(|text_content| text(text_content).into())
                 .unwrap_or_else(|| Space::new().width(Length::Shrink).into()),
             crate::config::CustomModuleType::Button => {
-                let mut icon_element = self.config.icon.as_ref().map_or_else(
-                    || icon(StaticIcon::None),
+                let icon_element = self.resolved_icon.as_ref().map_or_else(
+                    || match &self.config.icon {
+                        Some(text) => icon(DynamicIcon(text.clone())),
+                        None => icon(StaticIcon::None),
+                    },
                     |text| icon(DynamicIcon(text.clone())),
                 );
 
-                if let Some(icons_map) = &self.config.icons {
-                    for (re, icon_str) in icons_map {
-                        if re.is_match(&self.data.alt) {
-                            icon_element = icon(DynamicIcon(icon_str.clone()));
-                            break; // Use the first match
-                        }
-                    }
-                }
-
-                // Wrap the icon in a container to apply padding
                 let padded_icon_container = container(icon_element).padding([0, 1]);
 
-                let show_alert = self
-                    .config
-                    .alert
-                    .as_ref()
-                    .is_some_and(|re| re.is_match(&self.data.alt));
-
-                let icon_with_alert = if show_alert {
+                let icon_with_alert = if self.resolved_alert {
                     let alert_canvas = canvas(AlertIndicator)
-                        .width(Length::Fixed(space.xs)) // Size of the dot
+                        .width(Length::Fixed(space.xs))
                         .height(Length::Fixed(space.xs));
 
                     // Container to position the dot at the top-right
                     let alert_indicator_container = container(alert_canvas)
-                        .width(Length::Fill) // Take full width of the stack item
-                        .height(Length::Fill) // Take full height
+                        .width(Length::Fill)
+                        .height(Length::Fill)
                         .align_x(iced::alignment::Horizontal::Right)
                         .align_y(iced::alignment::Vertical::Top);
 
                     Stack::new()
-                        .push(padded_icon_container) // Padded icon is the base layer
-                        .push(alert_indicator_container) // Dot container on top
+                        .push(padded_icon_container)
+                        .push(alert_indicator_container)
                         .into()
                 } else {
-                    padded_icon_container.into() // No alert, just the padded icon
+                    padded_icon_container.into()
                 };
 
-                let maybe_text_element = self.data.text.as_ref().and_then(|text_content| {
-                    if !text_content.is_empty() {
-                        Some(text(text_content.clone()))
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(text_element) = maybe_text_element {
-                    row![icon_with_alert, text_element].spacing(space.xs).into()
+                if let Some(text_content) = self.data.text.as_deref().filter(|t| !t.is_empty()) {
+                    row![icon_with_alert, text(text_content)]
+                        .spacing(space.xs)
+                        .into()
                 } else {
                     icon_with_alert
                 }

@@ -1,5 +1,5 @@
 use crate::{
-    config::{WindowTitleConfig, WindowTitleMode},
+    config::{WindowTitleMode, WindowTitleModuleConfig},
     services::{ReadOnlyService, ServiceEvent, compositor::CompositorService},
     theme::use_theme,
     utils::truncate_text,
@@ -11,18 +11,18 @@ use iced::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    ServiceEvent(Box<ServiceEvent<CompositorService>>),
-    ConfigReloaded(WindowTitleConfig),
+    Event(Box<ServiceEvent<CompositorService>>),
+    ConfigReloaded(WindowTitleModuleConfig),
 }
 
 pub struct WindowTitle {
-    config: WindowTitleConfig,
+    config: WindowTitleModuleConfig,
     service: Option<CompositorService>,
     value: Option<String>,
 }
 
 impl WindowTitle {
-    pub fn new(config: WindowTitleConfig) -> Self {
+    pub fn new(config: WindowTitleModuleConfig) -> Self {
         Self {
             config,
             service: None,
@@ -32,19 +32,14 @@ impl WindowTitle {
 
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::ServiceEvent(event) => match *event {
-                ServiceEvent::Init(service) => {
-                    self.service = Some(service);
+            Message::Event(event) => {
+                if matches!(
+                    event.apply(&mut self.service),
+                    crate::services::Applied::Init | crate::services::Applied::Updated
+                ) {
                     self.recalculate_value();
                 }
-                ServiceEvent::Update(event) => {
-                    if let Some(service) = &mut self.service {
-                        service.update(event);
-                        self.recalculate_value();
-                    }
-                }
-                _ => {}
-            },
+            }
             Message::ConfigReloaded(cfg) => {
                 self.config = cfg;
                 self.recalculate_value();
@@ -86,23 +81,21 @@ impl WindowTitle {
         }
     }
 
-    pub fn get_value(&self) -> Option<String> {
-        self.value.clone()
-    }
-
-    pub fn view(&'_ self, title: String) -> Element<'_, Message> {
-        use_theme(|theme| {
-            container(
-                text(title)
-                    .size(theme.font_size.sm)
-                    .wrapping(text::Wrapping::None),
-            )
-            .clip(true)
-            .into()
+    pub fn view(&'_ self) -> Option<Element<'_, Message>> {
+        self.value.as_ref().map(|title| {
+            use_theme(|theme| {
+                container(
+                    text(title.as_str())
+                        .size(theme.font_size.sm)
+                        .wrapping(text::Wrapping::None),
+                )
+                .clip(true)
+                .into()
+            })
         })
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        CompositorService::subscribe().map(|event| Message::ServiceEvent(Box::new(event)))
+        CompositorService::subscribe().map(|event| Message::Event(Box::new(event)))
     }
 }

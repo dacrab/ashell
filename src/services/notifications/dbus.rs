@@ -73,6 +73,9 @@ pub struct Notification {
     pub icon: Option<NotificationIcon>,
 }
 
+// Guards close-vs-replace races only; stale entries are harmless to drop.
+const MAX_REVISIONS: usize = 500;
+
 pub struct NotificationDaemon {
     next_id: u32,
     next_revision: u64,
@@ -127,6 +130,19 @@ impl NotificationDaemon {
         self.next_revision += 1;
         let revision = self.next_revision;
         self.revisions.insert(id, revision);
+        while self.revisions.len() > MAX_REVISIONS {
+            let oldest = self
+                .revisions
+                .iter()
+                .min_by_key(|(_, rev)| **rev)
+                .map(|(id, _)| *id);
+            match oldest {
+                Some(oldest) if oldest != id => {
+                    self.revisions.remove(&oldest);
+                }
+                _ => break,
+            }
+        }
 
         let icon = NotificationIcon::resolve(&app_name, &app_icon, &hints);
         let urgency = Urgency::from_hints(&hints);
@@ -147,7 +163,6 @@ impl NotificationDaemon {
 
         debug!("New notification: {:?}", notification);
 
-        // Send event through channel
         let _ = self
             .event_tx
             .send(NotificationEvent::Received(Box::new(notification)));
@@ -158,7 +173,6 @@ impl NotificationDaemon {
     async fn close_notification(&mut self, id: u32) {
         self.revisions.remove(&id);
 
-        // Send event through channel
         let _ = self.event_tx.send(NotificationEvent::Closed(id));
 
         // Emit DBus signal for external applications
@@ -187,10 +201,6 @@ impl NotificationDaemon {
 impl NotificationDaemon {
     pub async fn start_server() -> anyhow::Result<(Connection, broadcast::Sender<NotificationEvent>)>
     {
-        Self::init_server().await
-    }
-
-    async fn init_server() -> anyhow::Result<(Connection, broadcast::Sender<NotificationEvent>)> {
         let (event_tx, _rx) = broadcast::channel(100);
 
         let connection = zbus::connection::Connection::session().await?;

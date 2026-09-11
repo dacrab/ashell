@@ -21,17 +21,9 @@ pub struct Privacy {
 impl Privacy {
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::Event(event) => match event {
-                ServiceEvent::Init(service) => {
-                    self.service = Some(service);
-                }
-                ServiceEvent::Update(data) => {
-                    if let Some(privacy) = self.service.as_mut() {
-                        privacy.update(data);
-                    }
-                }
-                ServiceEvent::Error(_) => {}
-            },
+            Message::Event(event) => {
+                event.apply(&mut self.service);
+            }
         }
     }
 

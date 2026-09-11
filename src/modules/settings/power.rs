@@ -109,7 +109,7 @@ impl PowerSettingsConfig {
 }
 
 pub struct PowerSettings {
-    pub config: PowerSettingsConfig,
+    config: PowerSettingsConfig,
     service: Option<UPowerService>,
 }
 
@@ -121,38 +121,27 @@ impl PowerSettings {
         }
     }
 
+    pub fn peripheral_expanded_by_default(&self) -> bool {
+        self.config.peripheral_expanded_by_default
+    }
+
+    /// Send a command to the live service, forwarding the follow-up events.
+    fn dispatch(&mut self, cmd: UPowerCommand) -> Action {
+        match self.service.as_mut() {
+            Some(service) => Action::Command(service.command(cmd).map(Message::Event)),
+            _ => Action::None,
+        }
+    }
+
     pub fn update(&mut self, message: Message) -> Action {
         match message {
-            Message::Event(event) => match event {
-                ServiceEvent::Init(service) => {
-                    self.service = Some(service);
-                    Action::None
-                }
-                ServiceEvent::Update(data) => {
-                    if let Some(service) = self.service.as_mut() {
-                        service.update(data);
-                    }
-                    Action::None
-                }
-                ServiceEvent::Error(_) => Action::None,
-            },
+            Message::Event(event) => {
+                event.apply(&mut self.service);
+                Action::None
+            }
             Message::TogglePeripheralMenu => Action::TogglePeripheralMenu,
-            Message::TogglePowerProfile => match self.service.as_mut() {
-                Some(service) => Action::Command(
-                    service
-                        .command(UPowerCommand::TogglePowerProfile)
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
-            Message::ToggleChargeLimit => match self.service.as_mut() {
-                Some(service) => Action::Command(
-                    service
-                        .command(UPowerCommand::ToggleChargeLimit)
-                        .map(Message::Event),
-                ),
-                _ => Action::None,
-            },
+            Message::TogglePowerProfile => self.dispatch(UPowerCommand::TogglePowerProfile),
+            Message::ToggleChargeLimit => self.dispatch(UPowerCommand::ToggleChargeLimit),
             Message::Suspend => {
                 utils::launcher::suspend(&self.config.suspend_cmd);
                 Action::None
@@ -227,7 +216,7 @@ impl PowerSettings {
                         .iter()
                         .map(|p| {
                             row![
-                                icon(p.kind.get_icon()),
+                                icon(p.kind.icon()),
                                 text(p.name.to_string()).width(Length::Fill),
                                 self.menu_indicator(p.data, None, None),
                             ]
@@ -262,35 +251,32 @@ impl PowerSettings {
             .iter()
             .filter(|p| kinds_filter.is_none_or(|kinds| kinds.contains(&p.kind)))
             .map(|p| {
-                let state = p.data.get_indicator_state();
+                let state = p.data.indicator_state();
                 container(match self.config.peripheral_battery_format {
                     SettingsFormat::Icon => {
-                        convert::Into::<Element<'a, Message>>::into(icon(p.get_icon_state()))
+                        convert::Into::<Element<'a, Message>>::into(icon(p.icon_state()))
                     }
-                    SettingsFormat::Percentage => row!(
-                        icon(p.kind.get_icon()),
-                        text(format!("{}%", p.data.capacity))
-                    )
-                    .spacing(space.xxs)
-                    .align_y(Alignment::Center)
-                    .into(),
-                    SettingsFormat::IconAndPercentage => row!(
-                        icon(p.get_icon_state()),
-                        text(format!("{}%", p.data.capacity))
-                    )
-                    .spacing(space.xxs)
-                    .align_y(Alignment::Center)
-                    .into(),
+                    SettingsFormat::Percentage => {
+                        row!(icon(p.kind.icon()), text(format!("{}%", p.data.capacity)))
+                            .spacing(space.xxs)
+                            .align_y(Alignment::Center)
+                            .into()
+                    }
+                    SettingsFormat::IconAndPercentage => {
+                        row!(icon(p.icon_state()), text(format!("{}%", p.data.capacity)))
+                            .spacing(space.xxs)
+                            .align_y(Alignment::Center)
+                            .into()
+                    }
                     SettingsFormat::Time => text(format_time_for_battery(&p.data)).into(),
-                    SettingsFormat::IconAndTime => row!(
-                        icon(p.get_icon_state()),
-                        text(format_time_for_battery(&p.data))
-                    )
-                    .spacing(space.xxs)
-                    .align_y(Alignment::Center)
-                    .into(),
+                    SettingsFormat::IconAndTime => {
+                        row!(icon(p.icon_state()), text(format_time_for_battery(&p.data)))
+                            .spacing(space.xxs)
+                            .align_y(Alignment::Center)
+                            .into()
+                    }
                     SettingsFormat::Name | SettingsFormat::IconAndName => {
-                        convert::Into::<Element<'a, Message>>::into(icon(p.get_icon_state()))
+                        convert::Into::<Element<'a, Message>>::into(icon(p.icon_state()))
                     }
                 })
                 .style(move |theme: &Theme| container::Style {
@@ -322,12 +308,12 @@ impl PowerSettings {
                 let state = if charge_limit_active {
                     IndicatorState::Success
                 } else {
-                    battery.get_indicator_state()
+                    battery.indicator_state()
                 };
                 let indicator_icon = if charge_limit_active {
                     StaticIcon::BatteryLimit
                 } else {
-                    battery.get_icon()
+                    battery.icon()
                 };
                 let label: String = match self.config.battery_format {
                     SettingsFormat::Time | SettingsFormat::IconAndTime => {
@@ -360,7 +346,7 @@ impl PowerSettings {
         let state = if charge_limit_active {
             IndicatorState::Success
         } else {
-            battery.get_indicator_state()
+            battery.indicator_state()
         };
 
         container({
@@ -370,7 +356,7 @@ impl PowerSettings {
                     .push(icon(if charge_limit_active {
                         StaticIcon::BatteryLimit
                     } else {
-                        battery.get_icon()
+                        battery.icon()
                     }))
                     .push(text(format!("{}%", battery.capacity)))
                     .spacing(space.xxs),
@@ -435,7 +421,7 @@ impl PowerSettings {
                     if let Some(peripheral) = service.peripherals.first() {
                         let indicator = self.menu_indicator(
                             peripheral.data,
-                            Some(peripheral.kind.get_icon()),
+                            Some(peripheral.kind.icon()),
                             None,
                         );
 
@@ -564,7 +550,7 @@ impl PowerSettings {
         self.service.as_ref().and_then(|service| {
             service.peripherals.get(index).map(|p| {
                 let capacity = p.data.capacity as u32;
-                (p.name.clone(), capacity, p.get_icon_state())
+                (p.name.clone(), capacity, p.icon_state())
             })
         })
     }

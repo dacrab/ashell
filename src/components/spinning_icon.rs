@@ -6,11 +6,11 @@ use iced::{
     },
     widget::canvas::{self, Frame, Path},
 };
-use std::{f32::consts::PI, time::Instant};
+use std::{f32::consts::TAU, time::Instant};
 
 type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
 
-const SPIN_SPEED: f32 = PI * 2.0;
+const SPIN_SPEED: f32 = TAU;
 
 const DOTS: &[(f32, f32, f32)] = &[
     (12.0, 1.0, 0.9),

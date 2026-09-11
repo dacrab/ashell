@@ -1,4 +1,3 @@
-pub mod access_point;
 pub mod adapter;
 pub mod agent_manager;
 pub mod device;
@@ -11,7 +10,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 // source for dbus: https://git.kernel.org/pub/scm/network/wireless/iwd.git/tree/doc
 //info!("{:?}",n.inner().introspect().await?); => can use this to generate proxy implementations
 
-use crate::services::bluetooth::BluetoothService;
+use crate::services::rfkill;
 
 use zbus::interface;
 
@@ -25,7 +24,6 @@ use log::{debug, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::process::Command;
 use zbus::fdo::ObjectManagerProxy;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -82,15 +80,12 @@ impl<'a> Deref for IwdDbus<'a> {
     }
 }
 
-#[allow(unused_variables)]
 impl super::NetworkBackend for IwdDbus<'_> {
     async fn initialize_data(&self) -> anyhow::Result<super::NetworkData> {
         let nm = self;
 
         // airplane mode
-        let bluetooth_soft_blocked = BluetoothService::check_rfkill_soft_block()
-            .await
-            .unwrap_or_default();
+        let bluetooth_soft_blocked = rfkill::check_soft_block().await.unwrap_or_default();
 
         let wifi_present = nm.wifi_device_present().await?;
 
@@ -189,14 +184,7 @@ impl super::NetworkBackend for IwdDbus<'_> {
 
             // maybe IWD will provide frequency and bitrate in the future
             if let Some(existing) = networks.get(&ssid)
-                && AccessPointData::is_better(
-                    existing.max_bitrate,
-                    existing.frequency,
-                    existing.strength,
-                    access_point.max_bitrate,
-                    access_point.frequency,
-                    access_point.strength,
-                )
+                && existing.is_better_than(&access_point)
             {
                 continue;
             }
@@ -274,8 +262,8 @@ impl super::NetworkBackend for IwdDbus<'_> {
 
     async fn set_vpn(
         &self,
-        path: OwnedObjectPath,
-        enable: bool,
+        _path: OwnedObjectPath,
+        _enable: bool,
     ) -> anyhow::Result<Vec<KnownConnection>> {
         // IWD doesn't natively support VPN management
         // This would need to be implemented with additional VPN management tools
@@ -285,11 +273,7 @@ impl super::NetworkBackend for IwdDbus<'_> {
     }
 
     async fn set_airplane_mode(&self, airplane: bool) -> anyhow::Result<()> {
-        Command::new("/usr/sbin/rfkill")
-            .arg(if airplane { "block" } else { "unblock" })
-            .arg("bluetooth")
-            .output()
-            .await?;
+        rfkill::set_block(airplane).await;
         self.set_wifi_enabled(!airplane).await?;
         Ok(())
     }
@@ -422,7 +406,6 @@ impl PWAgent {
     }
 }
 
-#[allow(dead_code, unused_variables)]
 impl IwdDbus<'_> {
     /// Connect to the system bus and the IWD service.
     pub async fn new(conn: &zbus::Connection) -> anyhow::Result<Self> {
@@ -480,7 +463,6 @@ impl IwdDbus<'_> {
     }
 
     pub async fn subscribe_events(&self) -> anyhow::Result<impl Stream<Item = Vec<NetworkEvent>>> {
-        let _conn = self.inner().connection();
         let iwd = self;
 
         // Subscribe before enumerating stations so station additions/removals cannot be missed.
@@ -583,7 +565,9 @@ impl IwdDbus<'_> {
                         if is_scanning {
                             debug!("Scanning wifi");
                             events.push(NetworkEvent::ScanningNearbyWifi(true));
-                            // to update list, if scanning stopped use device
+                            // While scanning, only refresh the AP list; the WirelessDevice event
+                            // sent on stop also clears the pending-scan state (see
+                            // `NetworkService::update`).
                             events.push(NetworkEvent::WirelessAccessPoint(aps));
                         } else {
                             debug!("Stopped scanning wifi");
@@ -599,9 +583,7 @@ impl IwdDbus<'_> {
                 .boxed();
             ap_s_kap_changes.push(apstream);
 
-            // 2) channel
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(OwnedObjectPath, u8)>();
-            // 3) export agent
             let agent = SignalAgent { tx };
 
             let station_path = station.inner().path().clone().into();
@@ -617,13 +599,11 @@ impl IwdDbus<'_> {
             ))?;
             let station_for_signal_stream = station.clone();
 
-            let server = self
-                .inner()
+            self.inner()
                 .connection()
                 .object_server()
                 .at(&agent_path, agent)
                 .await?;
-            // 6) turn receiver into a Stream
             signal_level_updates.push(
                 UnboundedReceiverStream::new(rx)
                     .filter_map(move |(changed_path, level)| {
@@ -802,14 +782,7 @@ impl IwdDbus<'_> {
             .into_iter()
             .fold(HashMap::<String, AccessPointData>::new(), |mut acc, ap| {
                 if let Some(existing) = acc.get(&ap.ssid)
-                    && AccessPointData::is_better(
-                        existing.max_bitrate,
-                        existing.frequency,
-                        existing.strength,
-                        ap.max_bitrate,
-                        ap.frequency,
-                        ap.strength,
-                    )
+                    && existing.is_better_than(&ap)
                 {
                     return acc;
                 }

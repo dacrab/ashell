@@ -91,7 +91,6 @@ impl<'a> Deref for IwdDbus<'a> {
     }
 }
 
-#[allow(unused_variables)]
 impl super::NetworkBackend for IwdDbus<'_> {
     async fn initialize_data(&self) -> anyhow::Result<super::NetworkData> {
         let nm = self;
@@ -288,8 +287,8 @@ impl super::NetworkBackend for IwdDbus<'_> {
 
     async fn set_vpn(
         &self,
-        path: OwnedObjectPath,
-        enable: bool,
+        _path: OwnedObjectPath,
+        _enable: bool,
     ) -> anyhow::Result<Vec<KnownConnection>> {
         // IWD doesn't natively support VPN management
         // This would need to be implemented with additional VPN management tools
@@ -325,28 +324,6 @@ macro_rules! list_proxies {
             Ok::<_, anyhow::Error>(proxies)
         }
     };
-}
-
-#[allow(unused)]
-enum IwdStationState {
-    Connected,
-    Disconnected,
-    Connecting,
-    Disconnecting,
-    Roaming,
-}
-
-impl From<String> for IwdStationState {
-    fn from(state: String) -> Self {
-        match state.as_str() {
-            "connected" => IwdStationState::Connected,
-            "disconnected" => IwdStationState::Disconnected,
-            "connecting" => IwdStationState::Connecting,
-            "disconnecting" => IwdStationState::Disconnecting,
-            "roaming" => IwdStationState::Roaming,
-            _ => IwdStationState::Disconnected,
-        }
-    }
 }
 
 static NEXT_SIGNAL_AGENT_ID: AtomicU64 = AtomicU64::new(0);

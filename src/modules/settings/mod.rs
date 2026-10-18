@@ -722,9 +722,7 @@ impl Settings {
                     self.idle_inhibitor.as_ref().map(|idle_inhibitor| {
                         (
                             quick_setting_button(
-                                IdleInhibitorManager::idle_inhibitor_icon(
-                                    idle_inhibitor.is_inhibited(),
-                                ),
+                                StaticIcon::idle_inhibitor(idle_inhibitor.is_inhibited()),
                                 t!("settings-idle-inhibitor"),
                                 None,
                                 idle_inhibitor.is_inhibited(),
@@ -872,7 +870,7 @@ impl Settings {
                     .as_ref()
                     .filter(|i| i.is_inhibited())
                     .map(|_| {
-                        container(icon(IdleInhibitorManager::idle_inhibitor_icon(true)))
+                        container(icon(StaticIcon::idle_inhibitor(true)))
                             .style(|theme: &Theme| container::Style {
                                 text_color: Some(theme.palette().danger),
                                 ..Default::default()

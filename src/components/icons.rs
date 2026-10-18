@@ -142,6 +142,16 @@ pub enum StaticIcon {
 }
 
 impl StaticIcon {
+    /// Icon for the idle-inhibitor state: an open eye while the inhibitor is
+    /// active, a closed one otherwise.
+    pub fn idle_inhibitor(active: bool) -> Self {
+        if active {
+            StaticIcon::EyeOpened
+        } else {
+            StaticIcon::EyeClosed
+        }
+    }
+
     fn get_str(&self) -> &'static str {
         match self {
             StaticIcon::None => "",

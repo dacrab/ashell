@@ -10,9 +10,19 @@ use iced::{
 };
 use std::time::Instant;
 
-use crate::components::menu::ANIMATION_DURATION;
+use crate::components::menu::{CLOSE_DURATION, OPEN_DURATION};
 
 type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
+
+/// Easing for the open reveal: quick off the mark, settling gently into place.
+const OPEN_EASING: Easing = Easing::EaseOutQuint;
+
+/// Easing for the close reveal: gathered up gently, then pulled back to the bar.
+const CLOSE_EASING: Easing = Easing::EaseInQuad;
+
+/// How far the content travels towards the bar edge while revealing, in logical
+/// pixels. The growing clip alone reads as a wipe; the offset adds motion.
+const SLIDE_OFFSET: f32 = 12.0;
 
 struct State {
     progress_anim: Animation<f32>,
@@ -81,6 +91,29 @@ where
 
     fn slide_from_top(&self) -> bool {
         matches!(self.vertical_alignment, alignment::Vertical::Top)
+    }
+
+    /// Animated reveal progress in `0.0..=1.0` at `now`.
+    fn progress(anim: &Animation<f32>, open: bool, now: Instant) -> f32 {
+        if anim.is_animating(now) {
+            anim.interpolate_with(|value| value, now)
+        } else if open {
+            1.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Offset of the content from its settled position while revealing.
+    /// Positive moves down, negative up, so the menu always slides out from
+    /// behind the bar.
+    fn slide(&self, progress: f32) -> f32 {
+        let distance = (1.0 - progress) * SLIDE_OFFSET;
+        if self.slide_from_top() {
+            -distance
+        } else {
+            distance
+        }
     }
 }
 
@@ -152,6 +185,12 @@ where
         let state = tree.state.downcast_mut::<State>();
         let now = Instant::now();
 
+        let (duration, easing) = if self.open {
+            (OPEN_DURATION, OPEN_EASING)
+        } else {
+            (CLOSE_DURATION, CLOSE_EASING)
+        };
+
         if !self.animated {
             let target = if self.open { 1.0 } else { 0.0 };
             state.progress_anim = Animation::new(target);
@@ -159,9 +198,7 @@ where
             state.initialized = true;
         } else if !state.initialized {
             let initial = if self.open { 0.0 } else { 1.0 };
-            state.progress_anim = Animation::new(initial)
-                .duration(ANIMATION_DURATION)
-                .easing(Easing::EaseOutCubic);
+            state.progress_anim = Animation::new(initial).duration(duration).easing(easing);
             state.last_open = self.open;
             state.initialized = true;
             if self.open {
@@ -170,6 +207,10 @@ where
         } else if self.open != state.last_open {
             state.last_open = self.open;
             let target = if self.open { 1.0 } else { 0.0 };
+            // Rebuild so opening and closing each ease with their own curve.
+            state.progress_anim = Animation::new(state.progress_anim.value())
+                .duration(duration)
+                .easing(easing);
             state.progress_anim.go_mut(target, now);
         }
 
@@ -217,10 +258,11 @@ where
         );
 
         if let event::Event::Window(iced::core::window::Event::RedrawRequested(now)) = event {
-            let state = tree.state.downcast_mut::<State>();
+            let state = tree.state.downcast_ref::<State>();
             if state.progress_anim.is_animating(*now) {
+                // Only drawing depends on the animation now, so a redraw is
+                // enough; asking for a relayout every frame would be wasted.
                 shell.request_redraw();
-                shell.invalidate_layout();
             }
         }
 
@@ -244,13 +286,26 @@ where
 
     fn mouse_interaction(
         &self,
-        _: &Tree,
-        _: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-        _: &Renderer,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &Renderer,
     ) -> mouse::Interaction {
-        mouse::Interaction::default()
+        // Delegate to the menu content: this wrapper is the root of the whole
+        // menu layer (backdrop included), so returning a fixed interaction here
+        // would hide the cursor shape of everything drawn inside it.
+        if !self.open {
+            return mouse::Interaction::default();
+        }
+
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout.children().next().unwrap(),
+            cursor,
+            viewport,
+            renderer,
+        )
     }
 
     fn draw(
@@ -265,13 +320,7 @@ where
     ) {
         let state = tree.state.downcast_ref::<State>();
         let now = Instant::now();
-        let progress = if state.progress_anim.is_animating(now) {
-            state.progress_anim.interpolate_with(|v| v, now)
-        } else if self.open {
-            1.0
-        } else {
-            0.0
-        };
+        let progress = Self::progress(&state.progress_anim, self.open, now);
 
         if let Some(backdrop) = self.backdrop {
             let mut backdrop = backdrop;
@@ -319,16 +368,25 @@ where
         let Some(child_viewport) = clip_bounds.intersection(viewport) else {
             return;
         };
+
+        // Slide the content towards the bar edge as the reveal plays, so the
+        // menu emerges from behind the bar rather than being wiped into view.
+        // Applied when drawing: the layout (and therefore hit-testing) stays at
+        // the settled position, and a few pixels of offset during the animation
+        // are imperceptible.
+        let slide = self.slide(progress);
         renderer.with_layer(clip_bounds, |renderer| {
-            self.content.as_widget().draw(
-                &tree.children[0],
-                renderer,
-                theme,
-                renderer_style,
-                content_layout,
-                cursor,
-                &child_viewport,
-            );
+            renderer.with_translation(Vector::new(0.0, slide), |renderer| {
+                self.content.as_widget().draw(
+                    &tree.children[0],
+                    renderer,
+                    theme,
+                    renderer_style,
+                    content_layout,
+                    cursor,
+                    &child_viewport,
+                );
+            });
         });
     }
 

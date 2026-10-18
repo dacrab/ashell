@@ -176,6 +176,11 @@ where
         self
     }
 
+    /// Whether any mouse button is bound to this button.
+    fn has_bound_button(&self) -> bool {
+        self.on_press.is_some() || self.on_right_press.is_some() || self.on_middle_press.is_some()
+    }
+
     fn publish_on_press(
         &self,
         on_press: &OnPress<'a, Message>,
@@ -577,16 +582,25 @@ where
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &Renderer,
+        viewport: &Rectangle,
+        renderer: &Renderer,
     ) -> mouse::Interaction {
-        let is_mouse_over = cursor.is_over(layout.bounds());
-
-        if is_mouse_over && (self.on_press.is_some() || self.on_middle_press.is_some()) {
+        // Any bound button makes the whole area a pointer target; binding only
+        // scroll or hover does not. Otherwise fall through to the content so
+        // buttons and sliders nested inside it keep their own cursor.
+        if cursor.is_over(layout.bounds()) && self.has_bound_button() {
             mouse::Interaction::Pointer
+        } else if let Some(child_layout) = layout.children().next() {
+            self.content.as_widget().mouse_interaction(
+                &tree.children[0],
+                child_layout,
+                cursor,
+                viewport,
+                renderer,
+            )
         } else {
             mouse::Interaction::default()
         }

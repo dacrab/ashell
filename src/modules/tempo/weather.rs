@@ -5,6 +5,7 @@ use iced::{
     Border, Degrees, Element, Length, Padding, Rotation, Theme,
     alignment::{Horizontal, Vertical},
     core::svg::Handle,
+    mouse::Interaction,
     widget::{Column, MouseArea, Row, Svg, column, container, row, svg, text},
 };
 use itertools::izip;
@@ -65,6 +66,7 @@ impl Tempo {
 
                 let location_element: Element<'a, Message> = MouseArea::new(inner_element)
                     .on_press(Message::ToggleLocationVisibility)
+                    .interaction(Interaction::Pointer)
                     .into();
 
                 column!(

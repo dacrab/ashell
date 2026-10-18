@@ -19,6 +19,7 @@ use crate::{
 use iced::{
     Element, Length, Padding, Subscription, SurfaceId, Task, Theme,
     alignment::{Horizontal, Vertical},
+    mouse::Interaction,
     widget::{Column, MouseArea, Row, column, container, row, text},
 };
 use zbus::zvariant::OwnedObjectPath;
@@ -423,6 +424,7 @@ impl BluetoothSettings {
                 Some(
                     MouseArea::new(icon(StaticIcon::Bluetooth))
                         .on_right_press(Message::OpenMore)
+                        .interaction(Interaction::Pointer)
                         .into(),
                 )
             }

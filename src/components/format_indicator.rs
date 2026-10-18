@@ -3,7 +3,7 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Theme,
-    mouse::ScrollDelta,
+    mouse::{Interaction, ScrollDelta},
     widget::{MouseArea, container, row},
 };
 
@@ -80,7 +80,7 @@ impl<'a, Msg: 'static + Clone> From<FormatIndicator<'a, Msg>> for Element<'a, Ms
         };
 
         if fi.on_scroll.is_some() || fi.on_right_press.is_some() {
-            let mut area = MouseArea::new(colored);
+            let mut area = MouseArea::new(colored).interaction(Interaction::Pointer);
             if let Some(handler) = fi.on_scroll {
                 area = area.on_scroll(handler);
             }

@@ -156,7 +156,48 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let node = layout::positioned(
+        // Advance the reveal animation first: the slide below depends on this
+        // frame's progress, which is also why the widget asks for a relayout
+        // while animating.
+        let slide = {
+            let state = tree.state.downcast_mut::<State>();
+            let now = Instant::now();
+
+            let (duration, easing) = if self.open {
+                (OPEN_DURATION, OPEN_EASING)
+            } else {
+                (CLOSE_DURATION, CLOSE_EASING)
+            };
+
+            if !self.animated {
+                let target = if self.open { 1.0 } else { 0.0 };
+                state.progress_anim = Animation::new(target);
+                state.last_open = self.open;
+                state.initialized = true;
+            } else if !state.initialized {
+                let initial = if self.open { 0.0 } else { 1.0 };
+                state.progress_anim = Animation::new(initial).duration(duration).easing(easing);
+                state.last_open = self.open;
+                state.initialized = true;
+                if self.open {
+                    state.progress_anim.go_mut(1.0, now);
+                }
+            } else if self.open != state.last_open {
+                // Resume from where the reveal currently is, so reversing
+                // direction mid-animation doesn't jump.
+                let current = Self::progress(&state.progress_anim, state.last_open, now);
+                let target = if self.open { 1.0 } else { 0.0 };
+                state.last_open = self.open;
+                // Rebuild so opening and closing each ease with their own curve.
+                state.progress_anim = Animation::new(current).duration(duration).easing(easing);
+                state.progress_anim.go_mut(target, now);
+            }
+
+            let progress = Self::progress(&state.progress_anim, self.open, now);
+            self.slide(progress)
+        };
+
+        layout::positioned(
             limits,
             Length::Fill,
             Length::Fill,
@@ -178,43 +219,14 @@ where
                     size,
                 );
                 let y = node.bounds().y;
-                node.move_to(Point::new(x, y))
+                // Offset the content towards the bar edge while revealing, so
+                // the menu slides out from behind the bar. Doing it here (and
+                // not when drawing) keeps hit-testing and the regions widgets
+                // report to the compositor — the blur region included — in
+                // agreement with what is on screen.
+                node.move_to(Point::new(x, y + slide))
             },
-        );
-
-        let state = tree.state.downcast_mut::<State>();
-        let now = Instant::now();
-
-        let (duration, easing) = if self.open {
-            (OPEN_DURATION, OPEN_EASING)
-        } else {
-            (CLOSE_DURATION, CLOSE_EASING)
-        };
-
-        if !self.animated {
-            let target = if self.open { 1.0 } else { 0.0 };
-            state.progress_anim = Animation::new(target);
-            state.last_open = self.open;
-            state.initialized = true;
-        } else if !state.initialized {
-            let initial = if self.open { 0.0 } else { 1.0 };
-            state.progress_anim = Animation::new(initial).duration(duration).easing(easing);
-            state.last_open = self.open;
-            state.initialized = true;
-            if self.open {
-                state.progress_anim.go_mut(1.0, now);
-            }
-        } else if self.open != state.last_open {
-            state.last_open = self.open;
-            let target = if self.open { 1.0 } else { 0.0 };
-            // Rebuild so opening and closing each ease with their own curve.
-            state.progress_anim = Animation::new(state.progress_anim.value())
-                .duration(duration)
-                .easing(easing);
-            state.progress_anim.go_mut(target, now);
-        }
-
-        node
+        )
     }
 
     fn operate(
@@ -258,11 +270,12 @@ where
         );
 
         if let event::Event::Window(iced::core::window::Event::RedrawRequested(now)) = event {
-            let state = tree.state.downcast_ref::<State>();
+            let state = tree.state.downcast_mut::<State>();
             if state.progress_anim.is_animating(*now) {
-                // Only drawing depends on the animation now, so a redraw is
-                // enough; asking for a relayout every frame would be wasted.
+                // The slide lives in the layout, so the reveal needs a relayout
+                // per frame, exactly like the other animated widgets here.
                 shell.request_redraw();
+                shell.invalidate_layout();
             }
         }
 
@@ -341,7 +354,13 @@ where
         }
 
         let content_layout = layout.children().next().unwrap();
-        let content_bounds = content_layout.bounds();
+        // `layout` offsets the content while it animates, but the reveal band
+        // describes its settled position, so undo the offset here.
+        let bounds = content_layout.bounds();
+        let content_bounds = Rectangle::new(
+            Point::new(bounds.x, bounds.y - self.slide(progress)),
+            bounds.size(),
+        );
 
         // Clip-reveal: content is drawn at full size, but a growing clip rect
         // hides everything past `progress * height`. Anchored to the bar edge
@@ -368,25 +387,16 @@ where
         let Some(child_viewport) = clip_bounds.intersection(viewport) else {
             return;
         };
-
-        // Slide the content towards the bar edge as the reveal plays, so the
-        // menu emerges from behind the bar rather than being wiped into view.
-        // Applied when drawing: the layout (and therefore hit-testing) stays at
-        // the settled position, and a few pixels of offset during the animation
-        // are imperceptible.
-        let slide = self.slide(progress);
         renderer.with_layer(clip_bounds, |renderer| {
-            renderer.with_translation(Vector::new(0.0, slide), |renderer| {
-                self.content.as_widget().draw(
-                    &tree.children[0],
-                    renderer,
-                    theme,
-                    renderer_style,
-                    content_layout,
-                    cursor,
-                    &child_viewport,
-                );
-            });
+            self.content.as_widget().draw(
+                &tree.children[0],
+                renderer,
+                theme,
+                renderer_style,
+                content_layout,
+                cursor,
+                &child_viewport,
+            );
         });
     }
 

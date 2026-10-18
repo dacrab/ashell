@@ -12,7 +12,12 @@ use iced::{
 };
 use std::time::Duration;
 
-pub const ANIMATION_DURATION: Duration = Duration::from_millis(100);
+/// How long the menu takes to reveal when opening.
+pub const OPEN_DURATION: Duration = Duration::from_millis(170);
+
+/// How long the menu takes to retract when closing. `Menu::close` keeps the
+/// layer surface alive for this long so the animation can finish.
+pub const CLOSE_DURATION: Duration = Duration::from_millis(120);
 
 #[derive(Eq, PartialEq, Clone, Debug)]
 pub enum MenuType {
@@ -141,7 +146,7 @@ impl Menu {
         }
         Task::perform(
             async move {
-                tokio::time::sleep(ANIMATION_DURATION).await;
+                tokio::time::sleep(CLOSE_DURATION).await;
                 id
             },
             app::Message::FinishCloseMenu,

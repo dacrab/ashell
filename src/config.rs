@@ -2292,15 +2292,29 @@ pub fn subscription(path: &Path) -> Subscription<Message> {
                                     info!("Reload config file");
 
                                     let path_clone = path.clone();
-                                    let new_config = tokio::task::spawn_blocking(move || {
-                                        read_config(&path_clone).unwrap_or_default()
+                                    let reloaded = tokio::task::spawn_blocking(move || {
+                                        read_config(&path_clone)
                                     })
-                                    .await
-                                    .unwrap_or_default();
+                                    .await;
 
-                                    let _ = output
-                                        .send(Message::ConfigChanged(Box::new(new_config)))
-                                        .await;
+                                    match reloaded {
+                                        Ok(Ok(new_config)) => {
+                                            let _ = output
+                                                .send(Message::ConfigChanged(Box::new(new_config)))
+                                                .await;
+                                        }
+                                        // Keep the running config: a transient syntax error
+                                        // while editing must not wipe the bar to defaults.
+                                        Ok(Err(e)) => {
+                                            warn!("Ignoring invalid config: {e}");
+                                            eprintln!(
+                                                "ashell: warning: ignoring invalid config: {e}"
+                                            );
+                                        }
+                                        Err(e) => {
+                                            warn!("Config reload task failed: {e}");
+                                        }
+                                    }
                                 }
                                 Some(Event::Removed) => {
                                     // wait and double check if the file is really gone

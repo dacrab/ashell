@@ -133,7 +133,9 @@ impl PrivacyService {
                 })
                 .register();
 
-            boot_tx.send(Ok(())).unwrap();
+            // The receiver may already be gone if the subscription was cancelled
+            // before the handshake completed; that is not a fatal error.
+            let _ = boot_tx.send(Ok(()));
             mainloop.run();
 
             warn!("Pipewire mainloop exited");

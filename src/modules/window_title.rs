@@ -86,11 +86,11 @@ impl WindowTitle {
         }
     }
 
-    pub fn get_value(&self) -> Option<String> {
-        self.value.clone()
+    pub fn get_value(&self) -> Option<&str> {
+        self.value.as_deref()
     }
 
-    pub fn view(&'_ self, title: String) -> Element<'_, Message> {
+    pub fn view<'a>(&'a self, title: &'a str) -> Element<'a, Message> {
         use_theme(|theme| {
             container(
                 text(title)

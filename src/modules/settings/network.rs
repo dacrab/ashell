@@ -750,7 +750,7 @@ impl NetworkSettings {
             })
             .collect();
 
-        vpns.sort_by_key(|a| a.name.clone());
+        vpns.sort_by(|a, b| a.name.cmp(&b.name));
 
         let vpn_list = Column::with_children(
             vpns.into_iter()

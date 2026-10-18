@@ -104,11 +104,21 @@ fn command_slot() -> &'static Mutex<Option<CommandState>> {
     SLOT.get_or_init(|| Mutex::new(None))
 }
 
+/// Lock the command slot, recovering from a poisoned mutex.
+///
+/// The slot is touched from both the Wayland listener thread and from async
+/// command dispatch; a panic while it is held must not take down the service.
+fn lock_command_slot() -> std::sync::MutexGuard<'static, Option<CommandState>> {
+    command_slot()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 // `ext-workspace` stages requests, so `activate` is followed by `commit` + flush.
 fn activate_workspace(
     pick: impl FnOnce(&[WorkspaceHandle]) -> Option<WorkspaceHandle>,
 ) -> Result<()> {
-    let guard = command_slot().lock().unwrap();
+    let guard = lock_command_slot();
     let cmd = guard
         .as_ref()
         .ok_or_else(|| anyhow!("generic workspace control is unavailable on this compositor"))?;
@@ -311,7 +321,7 @@ impl GenericState {
                 })
             })
             .collect();
-        let mut slot = command_slot().lock().unwrap();
+        let mut slot = lock_command_slot();
         match slot.as_mut() {
             Some(state) => state.handles = handles,
             None => {
@@ -378,7 +388,7 @@ impl Dispatch<WlRegistry, ()> for GenericState {
                     state.workspaces.clear();
                     state.workspace_handles.clear();
                     state.workspace_order.clear();
-                    *command_slot().lock().unwrap() = None;
+                    *lock_command_slot() = None;
                     state.dirty = true;
                 } else if state.toplevel_manager_name == Some(name) {
                     state.toplevel_manager = None;

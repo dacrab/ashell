@@ -30,4 +30,4 @@ check:
 	cargo fmt --all -- --check
 	cargo check --workspace
 	cargo clippy --workspace --all-features -- -D warnings
-	cargo test -p ashell-services --all-features
+	cargo test --workspace --all-features

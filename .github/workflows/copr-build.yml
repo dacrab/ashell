@@ -1,5 +1,8 @@
 name: Copr Build
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   push:

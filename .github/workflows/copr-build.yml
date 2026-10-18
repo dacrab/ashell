@@ -32,9 +32,6 @@ jobs:
       COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          # Full history so the RPM release can be derived from the commit count.
-          fetch-depth: 0
 
       - name: Install dependencies
         run: |
@@ -62,8 +59,10 @@ jobs:
           {
             echo "VERSION=$(awk -F'\"' '/^version = /{print $2; exit}' Cargo.toml)"
             # Monotonic release so every push to main produces an upgradable RPM
-            # instead of re-publishing the same NEVRA.
-            echo "RELEASE=$(git rev-list --count HEAD)"
+            # instead of re-publishing the same NEVRA. GITHUB_RUN_NUMBER is used
+            # rather than the git commit count because the fedora:44 container has
+            # no git at checkout time, so the workspace is not a git repository.
+            echo "RELEASE=${GITHUB_RUN_NUMBER}"
           } >> "$GITHUB_ENV"
 
       - name: Build release binary

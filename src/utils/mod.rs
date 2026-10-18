@@ -23,45 +23,22 @@ pub fn format_duration(duration: &Duration) -> String {
     }
 }
 
-/// Truncate a string to `max_length` graphemes by replacing the middle with
-/// `...`, keeping both ends. Returns the input unchanged when short enough.
 pub fn truncate_text(value: &str, max_length: u32) -> String {
-    if value.graphemes(true).count() <= max_length as usize {
-        return value.to_string();
-    }
-
     let graphemes = value.graphemes(true).collect::<Vec<&str>>();
-    let split = max_length as usize / 2;
-    let last = graphemes.len() - split;
-    format!(
-        "{}...{}",
-        graphemes[..split].concat(),
-        graphemes[last..].concat()
-    )
-}
+    let length = graphemes.len();
 
-/// Clamp-adjust a value by `step`, bounded by `max`: adding saturates at
-/// `max`, subtracting at zero. Shared by volume, microphone and brightness
-/// adjustments.
-pub fn stepped_value(cur: u32, up: bool, step: u32, max: u32) -> u32 {
-    if up {
-        (cur + step).min(max)
+    if length > max_length as usize {
+        let split = max_length as usize / 2;
+        let first_part = graphemes[..split].concat();
+        let last_part = graphemes[length - split..].concat();
+        format!("{first_part}...{last_part}")
     } else {
-        cur.saturating_sub(step)
-    }
-}
-
-/// Vertical component of a scroll delta, shared by the scrollable sliders.
-pub fn scroll_y(delta: iced::mouse::ScrollDelta) -> f32 {
-    match delta {
-        iced::mouse::ScrollDelta::Lines { y, .. } => y,
-        iced::mouse::ScrollDelta::Pixels { y, .. } => y,
+        value.to_string()
     }
 }
 
 pub fn floor_dp(num: f32, dp: i32) -> f32 {
-    let scale = 10_f32.powi(dp);
-    (num * scale).floor() / scale
+    (num * 10_f32.powi(dp)).floor() / 10_f32.powi(dp)
 }
 
 pub fn bytes_to_gib(bytes: u64) -> f32 {
@@ -72,5 +49,5 @@ pub fn bytes_to_gb(bytes: u64) -> f32 {
 }
 
 pub fn celsius_to_fahrenheit(cel: i32) -> i32 {
-    cel * 9 / 5 + 32
+    (cel as f64 * 9.0 / 5.0 + 32.0).round() as i32
 }

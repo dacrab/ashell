@@ -47,6 +47,12 @@ static SYSTEM_ICON_ENTRIES: LazyLock<Vec<IconEntry>> = LazyLock::new(|| {
 });
 static DESKTOP_ICON_INDEX: LazyLock<HashMap<String, String>> =
     LazyLock::new(build_desktop_icon_index);
+// `get_icon_theme` can spawn `gsettings`, so resolve it once instead of per lookup.
+static ICON_THEME: LazyLock<Option<String>> = LazyLock::new(get_icon_theme);
+
+pub fn icon_theme() -> Option<&'static str> {
+    ICON_THEME.as_deref()
+}
 
 #[derive(Debug, Clone)]
 pub enum XdgIcon {
@@ -62,6 +68,7 @@ pub fn fallback_icon() -> XdgIcon {
 fn warm_cache() {
     LazyLock::force(&SYSTEM_ICON_ENTRIES);
     LazyLock::force(&DESKTOP_ICON_INDEX);
+    LazyLock::force(&ICON_THEME);
 }
 
 // Build the indexes on a blocking worker: they scan every icon dir and parse
@@ -70,8 +77,20 @@ pub async fn warm_cache_async() {
     let _ = tokio::task::spawn_blocking(warm_cache).await;
 }
 
-pub fn icon_from_name(icon_name: &str) -> Option<XdgIcon> {
-    if icon_name.is_empty() {
+// Names come from untrusted sources (SNI `IconName`, window classes) and reach
+// `freedesktop_icons`, which joins them onto a base path — absolute names
+// discard that base, `..` resolves at `open()`. Single dots are legitimate
+// (reverse-DNS names), so only `..` is rejected.
+fn is_safe_icon_name(icon_name: &str) -> bool {
+    !icon_name.is_empty()
+        && !icon_name.contains('/')
+        && !icon_name.contains('\0')
+        && !icon_name.contains("..")
+}
+
+pub fn get_icon_from_name(icon_name: &str) -> Option<XdgIcon> {
+    if !is_safe_icon_name(icon_name) {
+        debug!("icon '{icon_name}': rejected as unsafe name");
         return None;
     }
 
@@ -150,11 +169,11 @@ fn icon_from_path(path: PathBuf) -> Option<XdgIcon> {
     }
 }
 
-pub(crate) fn find_icon_path(icon_name: &str) -> Option<PathBuf> {
+fn find_icon_path(icon_name: &str) -> Option<PathBuf> {
     let base_lookup = lookup(icon_name).with_cache();
 
-    match get_icon_theme() {
-        Some(theme) => base_lookup.with_theme(&theme).find().or_else(|| {
+    match icon_theme() {
+        Some(theme) => base_lookup.with_theme(theme).find().or_else(|| {
             let fallback_lookup = lookup(icon_name).with_cache();
             fallback_lookup.find()
         }),
@@ -428,4 +447,109 @@ fn icon_directories() -> Vec<PathBuf> {
     dirs.sort();
     dirs.dedup();
     dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        get_icon_from_name, is_safe_icon_name, normalize_icon_name, strip_icon_separators,
+    };
+
+    #[test]
+    fn accepts_ordinary_icon_names() {
+        for name in [
+            "telegram",
+            "firefox",
+            "org.blueman",
+            "com.system76.CosmicAppletTiling.Off",
+            "ca.desrt.dconf-editor",
+            "audio-volume-high-symbolic",
+        ] {
+            assert!(is_safe_icon_name(name), "{name} should be accepted");
+        }
+    }
+
+    #[test]
+    fn rejects_path_traversal_components() {
+        for name in [
+            "../../etc/passwd",
+            "..",
+            "../..",
+            "foo/../../bar",
+            "org.blueman/../../../etc/shadow",
+            "a..b",
+        ] {
+            assert!(!is_safe_icon_name(name), "{name} should be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_separators_and_nul() {
+        assert!(!is_safe_icon_name(""));
+        assert!(!is_safe_icon_name("/home/u/Documents/x"));
+        assert!(!is_safe_icon_name("icon\0.png"));
+        assert!(!is_safe_icon_name("sub/dir/icon"));
+    }
+
+    #[test]
+    fn get_icon_from_name_rejects_unsafe_names() {
+        assert!(get_icon_from_name("../../etc/passwd").is_none());
+        assert!(get_icon_from_name("/etc/passwd").is_none());
+        assert!(get_icon_from_name("").is_none());
+    }
+
+    #[test]
+    fn normalize_icon_name_keeps_lowercase_alphanumeric_unchanged() {
+        assert_eq!(normalize_icon_name("telegram"), "telegram");
+        assert_eq!(normalize_icon_name("blueman"), "blueman");
+    }
+
+    #[test]
+    fn normalize_icon_name_strips_separators_in_mixed_names() {
+        assert_eq!(normalize_icon_name("org.blueman"), "orgblueman");
+        assert_eq!(
+            normalize_icon_name("org.telegram.desktop"),
+            "orgtelegramdesktop"
+        );
+    }
+
+    #[test]
+    fn normalize_icon_name_lowercases_and_strips_non_alphanumeric() {
+        assert_eq!(normalize_icon_name("Telegram"), "telegram");
+        assert_eq!(
+            normalize_icon_name("org.telegram.desktop"),
+            "orgtelegramdesktop"
+        );
+        assert_eq!(normalize_icon_name("BlueMan!"), "blueman");
+        assert_eq!(normalize_icon_name("123"), "123");
+    }
+
+    #[test]
+    fn normalize_icon_name_strips_unicode_non_ascii() {
+        assert_eq!(normalize_icon_name("naïve"), "nave");
+        assert_eq!(normalize_icon_name("app-1.0"), "app10");
+    }
+
+    #[test]
+    fn strip_icon_separators_removes_dashes_and_underscores() {
+        assert_eq!(strip_icon_separators("org.telegram"), "org.telegram");
+        assert_eq!(
+            strip_icon_separators("org-telegram-desktop"),
+            "orgtelegramdesktop"
+        );
+        assert_eq!(strip_icon_separators("foo_bar-baz"), "foobarbaz");
+    }
+
+    #[test]
+    fn strip_icon_separators_no_separators_is_borrowed() {
+        assert_eq!(strip_icon_separators("telegram"), "telegram");
+        assert_eq!(strip_icon_separators("org.telegram"), "org.telegram");
+    }
+
+    #[test]
+    fn normalize_then_strip_is_idempotent_for_clean_names() {
+        let normalized = normalize_icon_name("telegram");
+        let stripped = strip_icon_separators(normalized.as_ref());
+        assert_eq!(normalized, stripped);
+    }
 }

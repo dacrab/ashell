@@ -1,19 +1,14 @@
-//! Theming: `AshellTheme` (built from the config, stored thread-locally) is
-//! read per frame via `use_theme`; iced itself only sees the per-surface
-//! `iced::Theme`. The `Paint` type encodes whether a colour is part of the
-//! surface (carries its opacity) or drawn on top of it.
-
 use std::cell::RefCell;
 
 use crate::{
     components::button::{ButtonHierarchy, ButtonKind},
     config::{
-        Appearance, AppearanceColor, BackgroundLevel, BarAppearance, BarMargin, BarRadius,
-        BarSurface, MenuAppearance, Position, RadiusSize, SpaceSize, Surface,
+        Appearance, AppearanceColor, BackgroundLevel, BarAppearance, BarMargin, BarPadding,
+        BarRadius, BarSurface, MenuAppearance, Position, RadiusSize, SpaceSize, Surface,
     },
 };
 use iced::{
-    Background, Border, Color, Theme, border,
+    Background, Border, Color, Shadow, Theme, Vector, border,
     theme::{Palette, palette},
     widget::{
         button::{self, Status},
@@ -27,18 +22,15 @@ thread_local! {
     pub static THEME: RefCell<AshellTheme> =  RefCell::new(AshellTheme::default());
 }
 
-/// Replace the active theme; called on startup and on every config reload.
 pub fn init_theme(theme: AshellTheme) {
     THEME.replace(theme);
 }
 
-/// Read the active [`AshellTheme`] for this thread. View code calls this
-/// every frame to resolve sizes, colors and styles outside iced's `Theme`
-/// styling callbacks.
 pub fn use_theme<R, F: FnOnce(&AshellTheme) -> R>(f: F) -> R {
     THEME.with_borrow(f)
 }
 
+#[allow(unused)]
 #[derive(Debug, Copy, Clone)]
 pub struct Space {
     pub xxs: f32,
@@ -79,6 +71,7 @@ impl Space {
     }
 }
 
+#[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 pub struct Radius {
     pub sm: f32,
@@ -116,38 +109,44 @@ impl Radius {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BarLayout {
     pub surface: BarSurface,
-    pub margin: (f32, f32, f32, f32),
+    pub margin: BarMargin,
+    pub padding: BarPadding,
 }
 
 impl BarLayout {
     pub fn from_appearance(bar: &BarAppearance) -> Self {
-        Self::new(bar.surface, bar.margin)
+        Self::new(bar.surface, bar.margin, bar.padding)
     }
 
-    fn new(surface: BarSurface, margin: BarMargin) -> Self {
-        let space = Space::default();
+    fn new(surface: BarSurface, margin: BarMargin, padding: BarPadding) -> Self {
         Self {
             surface,
-            margin: (
-                space.resolve(margin.top),
-                space.resolve(margin.right),
-                space.resolve(margin.bottom),
-                space.resolve(margin.left),
-            ),
+            margin,
+            padding,
         }
     }
-}
 
-impl AshellTheme {
-    /// Layout geometry consumed together by the outputs sync/add/remove
-    /// paths: `(bar_layout, bar_position, scale_factor)`.
-    pub fn bar_geometry(&self) -> (BarLayout, Position, f64) {
-        (self.bar_layout(), self.bar_position, self.scale_factor)
+    /// Padding resolved to logical pixels, as iced renders it.
+    pub fn padding(&self) -> iced::Padding {
+        iced::Padding {
+            top: self.padding.top.into(),
+            right: self.padding.right.into(),
+            bottom: self.padding.bottom.into(),
+            left: self.padding.left.into(),
+        }
+    }
+
+    /// Extra surface height the padding needs on top of the content height.
+    pub fn vertical_padding(&self) -> f64 {
+        let p = self.padding();
+        f64::from(p.top + p.bottom)
     }
 }
 
+#[allow(unused)]
 #[derive(Debug, Copy, Clone)]
 pub struct FontSize {
+    pub xxs: f32,
     pub xs: f32,
     pub sm: f32,
     pub md: f32,
@@ -159,6 +158,7 @@ pub struct FontSize {
 impl Default for FontSize {
     fn default() -> Self {
         Self {
+            xxs: 8.0,
             xs: 10.0,
             sm: 12.0,
             md: 16.0,
@@ -191,6 +191,7 @@ pub struct AshellTheme {
     pub bar_surface: BarSurface,
     pub bar_radius: BarRadius,
     pub bar_margin: BarMargin,
+    pub bar_padding: BarPadding,
     pub menu: MenuAppearance,
     pub workspace_colors: Vec<AppearanceColor>,
     pub special_workspace_colors: Option<Vec<AppearanceColor>>,
@@ -233,6 +234,27 @@ const DIVIDER_ALPHA: f32 = 0.12;
 /// The foreground colour at `alpha`: a mark drawn on the surface.
 fn ink(theme: &Theme, alpha: f32) -> Color {
     theme.palette().text.scale_alpha(alpha)
+}
+
+/// A button that looks like its content in every state: for wrapping an
+/// element only to get hover events (e.g. to show a tooltip) inside a module
+/// whose own button already draws the hover highlight.
+pub fn transparent_button_style(theme: &Theme, _status: Status) -> button::Style {
+    button::Style {
+        background: None,
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.,
+            radius: 0.into(),
+        },
+        shadow: Shadow {
+            color: Color::TRANSPARENT,
+            offset: Vector::default(),
+            blur_radius: 0.,
+        },
+        text_color: theme.palette().text,
+        snap: true,
+    }
 }
 
 pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
@@ -375,12 +397,12 @@ pub fn card_style(radius: impl Into<border::Radius>) -> impl Fn(&Theme) -> conta
 
 fn base_palette(appearance: &Appearance) -> Palette {
     Palette {
-        background: appearance.background_color.base(),
-        text: appearance.text_color.base(),
-        primary: appearance.primary_color.base(),
-        success: appearance.success_color.base(),
-        warning: appearance.warning_color.base(),
-        danger: appearance.danger_color.base(),
+        background: appearance.background_color.get_base(),
+        text: appearance.text_color.get_base(),
+        primary: appearance.primary_color.get_base(),
+        success: appearance.success_color.get_base(),
+        warning: appearance.warning_color.get_base(),
+        danger: appearance.danger_color.get_base(),
     }
 }
 
@@ -389,7 +411,7 @@ fn base_palette(appearance: &Appearance) -> Palette {
 /// generated once and shared by all four surface themes.
 fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extended {
     let text = palette.text;
-    let bg_text = appearance.background_color.text().unwrap_or(text);
+    let bg_text = appearance.background_color.get_text().unwrap_or(text);
     // `mix` interpolates alpha too, so deriving from the translucent
     // colour would spread assorted alphas across the variants.
     let background = Color {
@@ -401,29 +423,29 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
     let bg = |level, fallback| {
         appearance
             .background_color
-            .pair(level, text)
+            .get_pair(level, text)
             .unwrap_or(fallback)
     };
 
     let default_primary = palette::Primary::generate(
         palette.primary,
         background,
-        appearance.primary_color.text().unwrap_or(text),
+        appearance.primary_color.get_text().unwrap_or(text),
     );
     let default_success = palette::Success::generate(
         palette.success,
         background,
-        appearance.success_color.text().unwrap_or(text),
+        appearance.success_color.get_text().unwrap_or(text),
     );
     let default_warning = palette::Warning::generate(
         palette.warning,
         background,
-        appearance.warning_color.text().unwrap_or(text),
+        appearance.warning_color.get_text().unwrap_or(text),
     );
     let default_danger = palette::Danger::generate(
         palette.danger,
         background,
-        appearance.danger_color.text().unwrap_or(text),
+        appearance.danger_color.get_text().unwrap_or(text),
     );
 
     palette::Extended {
@@ -441,11 +463,11 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
             base: default_primary.base,
             weak: appearance
                 .primary_color
-                .weak_pair(text)
+                .get_weak_pair(text)
                 .unwrap_or(default_primary.weak),
             strong: appearance
                 .primary_color
-                .strong_pair(text)
+                .get_strong_pair(text)
                 .unwrap_or(default_primary.strong),
         },
         secondary: palette::Secondary::generate(background, text),
@@ -453,33 +475,33 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
             base: default_success.base,
             weak: appearance
                 .success_color
-                .weak_pair(text)
+                .get_weak_pair(text)
                 .unwrap_or(default_success.weak),
             strong: appearance
                 .success_color
-                .strong_pair(text)
+                .get_strong_pair(text)
                 .unwrap_or(default_success.strong),
         },
         warning: palette::Warning {
             base: default_warning.base,
             weak: appearance
                 .warning_color
-                .weak_pair(text)
+                .get_weak_pair(text)
                 .unwrap_or(default_warning.weak),
             strong: appearance
                 .warning_color
-                .strong_pair(text)
+                .get_strong_pair(text)
                 .unwrap_or(default_warning.strong),
         },
         danger: palette::Danger {
             base: default_danger.base,
             weak: appearance
                 .danger_color
-                .weak_pair(text)
+                .get_weak_pair(text)
                 .unwrap_or(default_danger.weak),
             strong: appearance
                 .danger_color
-                .strong_pair(text)
+                .get_strong_pair(text)
                 .unwrap_or(default_danger.strong),
         },
         is_dark: true,
@@ -514,6 +536,7 @@ fn base_theme_from_appearance(
         bar_surface: appearance.bar.surface,
         bar_radius: appearance.bar.radius,
         bar_margin: appearance.bar.margin,
+        bar_padding: appearance.bar.padding,
         menu: appearance.menu,
         workspace_colors: appearance.workspace_colors.clone(),
         special_workspace_colors: appearance.special_workspace_colors.clone(),
@@ -545,7 +568,7 @@ impl AshellTheme {
     }
 
     pub fn bar_layout(&self) -> BarLayout {
-        BarLayout::new(self.bar_surface, self.bar_margin)
+        BarLayout::new(self.bar_surface, self.bar_margin, self.bar_padding)
     }
 
     pub fn bar_border_radius(&self) -> border::Radius {
@@ -634,7 +657,7 @@ impl AshellTheme {
                             .background
                             .base
                             .text
-                            .scale_alpha(HOVER_OVERLAY)
+                            .scale_alpha(0.04)
                             .into(),
                     ),
                     border: Border {
@@ -811,9 +834,9 @@ impl AshellTheme {
                     || theme.extended_palette().primary,
                     |c| {
                         palette::Primary::generate(
-                            c.base(),
+                            c.get_base(),
                             theme.palette().background,
-                            c.text().unwrap_or_else(|| theme.palette().text),
+                            c.get_text().unwrap_or_else(|| theme.palette().text),
                         )
                     },
                 )

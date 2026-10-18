@@ -5,12 +5,12 @@ use crate::{
         ButtonHierarchy, ButtonKind, ButtonUIRef, IconPosition, MenuSize, position_button,
         styled_button,
     },
-    components::{menu::MAX_MENU_HEIGHT, scrollable, toggler},
+    components::{scrollable, toggler},
     config::{TrayClickAction, TrayModuleConfig},
     services::{
         ReadOnlyService, Service, ServiceEvent,
         tray::{
-            TrayCommand, TrayEvent, TrayIcon, TrayService,
+            ItemStatus, StatusNotifierItem, TrayCommand, TrayEvent, TrayIcon, TrayService,
             dbus::{Layout, LayoutProps},
         },
     },
@@ -21,6 +21,8 @@ use iced::{
     widget::{Column, Image, Row, Svg, container, text},
 };
 use log::debug;
+
+const MENU_MAX_HEIGHT: f32 = 600.;
 
 fn is_separator(layout: &Layout) -> bool {
     layout.1.type_.as_deref() == Some("separator")
@@ -69,43 +71,33 @@ pub enum Action {
 }
 
 #[derive(Debug, Clone)]
-pub struct Tray {
+pub struct TrayModule {
     service: Option<TrayService>,
     submenus: Vec<i32>,
     blocklist: Vec<crate::config::RegexCfg>,
     right_click: Option<TrayClickAction>,
-    /// Cached set of blocklisted item names, recomputed on every service
-    /// update so `view()` doesn't run the blocklist regexes per frame.
-    hidden_names: std::collections::HashSet<String>,
 }
 
-impl Tray {
+impl TrayModule {
     pub fn new(config: TrayModuleConfig) -> Self {
         Self {
             service: None,
             submenus: Vec::new(),
             blocklist: config.blocklist.clone(),
             right_click: config.right_click,
-            hidden_names: std::collections::HashSet::new(),
         }
     }
 
-    fn refresh_hidden_names(&mut self) {
-        self.hidden_names = self
-            .service
-            .iter()
-            .flat_map(|service| service.data.iter())
-            .filter(|item| {
-                self.blocklist
-                    .iter()
-                    .any(|pattern| pattern.is_match(&item.name))
-            })
-            .map(|item| item.name.clone())
-            .collect();
+    fn is_blocklisted(&self, name: &str) -> bool {
+        self.blocklist.iter().any(|pattern| pattern.is_match(name))
     }
 
-    fn is_blocklisted(&self, name: &str) -> bool {
-        self.hidden_names.contains(name)
+    /// Visible unless blocklisted; `Passive` items are hidden per the spec.
+    fn is_visible(&self, item: &StatusNotifierItem) -> bool {
+        if self.is_blocklisted(&item.name) {
+            return false;
+        }
+        item.status != ItemStatus::Passive
     }
 
     pub fn update(&mut self, message: Message) -> Action {
@@ -113,7 +105,6 @@ impl Tray {
             Message::Event(event) => match *event {
                 ServiceEvent::Init(service) => {
                     self.service = Some(service);
-                    self.refresh_hidden_names();
                     Action::None
                 }
                 ServiceEvent::Update(data) => {
@@ -126,7 +117,6 @@ impl Tray {
                     if let Some(service) = self.service.as_mut() {
                         service.update(data);
                     }
-                    self.refresh_hidden_names();
 
                     action
                 }
@@ -191,7 +181,6 @@ impl Tray {
             Message::ConfigReloaded(config) => {
                 self.blocklist = config.blocklist;
                 self.right_click = config.right_click;
-                self.refresh_hidden_names();
                 Action::None
             }
         }
@@ -293,55 +282,58 @@ impl Tray {
         });
         let button_style = std::sync::Arc::new(button_style);
 
-        let service = self.service.as_ref()?;
-        let items: Vec<_> = service
-            .data
-            .iter()
-            .filter(|item| !self.is_blocklisted(&item.name))
-            .collect();
-        if items.is_empty() {
-            return None;
-        }
-        Some(Into::<Element<_>>::into(
-            Row::with_children(
-                items
-                    .into_iter()
-                    .map(|item| {
-                        let name = item.name.to_owned();
-                        let button_style = button_style.clone();
-                        let icon_content: Element<'_, Message> = match &item.icon {
-                            Some(TrayIcon::Image(handle)) => Image::new(handle.clone())
-                                .height(Length::Fixed(font_size.md - 2.0))
-                                .into(),
-                            Some(TrayIcon::Svg(handle)) => Svg::new(handle.clone())
-                                .height(Length::Fixed(font_size.md + 2.))
-                                .width(Length::Fixed(font_size.md + 2.))
-                                .content_fit(iced::ContentFit::Cover)
-                                .into(),
-                            _ => icon(StaticIcon::Point).into(),
-                        };
-                        let open_app = Message::Activate(name.clone());
-                        let toggle_menu = move |r| Message::ToggleMenu(name.clone(), id, r);
+        self.service
+            .as_ref()
+            .filter(|s| s.data.iter().any(|item| self.is_visible(item)))
+            .map(|service| {
+                Into::<Element<_>>::into(
+                    Row::with_children(
+                        service
+                            .data
+                            .iter()
+                            .filter(|item| self.is_visible(item))
+                            .map(|item| {
+                                let name = item.name.to_owned();
+                                let button_style = button_style.clone();
+                                let active_icon = if item.status == ItemStatus::NeedsAttention {
+                                    item.attention_icon.as_ref().or(item.icon.as_ref())
+                                } else {
+                                    item.icon.as_ref()
+                                };
+                                let icon_content: Element<'_, Message> = match active_icon {
+                                    Some(TrayIcon::Image(handle)) => Image::new(handle.clone())
+                                        .height(Length::Fixed(font_size.md - 2.0))
+                                        .into(),
+                                    Some(TrayIcon::Svg(handle)) => Svg::new(handle.clone())
+                                        .height(Length::Fixed(font_size.md + 2.))
+                                        .width(Length::Fixed(font_size.md + 2.))
+                                        .content_fit(iced::ContentFit::Cover)
+                                        .into(),
+                                    _ => icon(StaticIcon::Point).into(),
+                                };
+                                let open_app = Message::Activate(name.clone());
+                                let toggle_menu = move |r| Message::ToggleMenu(name.clone(), id, r);
 
-                        let mut btn = position_button(icon_content);
-                        btn = match &self.right_click {
-                            None => btn.on_press_with_position(toggle_menu.clone()),
-                            Some(TrayClickAction::Open) => btn
-                                .on_press_with_position(toggle_menu.clone())
-                                .on_right_press(open_app.clone()),
-                            Some(TrayClickAction::Menu) => btn
-                                .on_press(open_app.clone())
-                                .on_right_press_with_position(toggle_menu.clone()),
-                        };
-                        btn.padding(space.xxs)
-                            .style(move |t, s| button_style(t, s))
-                            .into()
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .padding([2.0, 0.])
-            .align_y(Alignment::Center),
-        ))
+                                let mut btn = position_button(icon_content);
+                                btn = match &self.right_click {
+                                    None => btn.on_press_with_position(toggle_menu.clone()),
+                                    Some(TrayClickAction::Open) => btn
+                                        .on_press_with_position(toggle_menu.clone())
+                                        .on_right_press(open_app.clone()),
+                                    Some(TrayClickAction::Menu) => btn
+                                        .on_press(open_app.clone())
+                                        .on_right_press_with_position(toggle_menu.clone()),
+                                };
+                                btn.padding(space.xxs)
+                                    .style(move |t, s| button_style(t, s))
+                                    .into()
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                    .padding([2.0, 0.])
+                    .align_y(Alignment::Center),
+                )
+            })
     }
 
     pub fn menu_view<'a>(&'a self, name: &'a str) -> Element<'a, Message> {
@@ -360,11 +352,142 @@ impl Tray {
 
         container(scrollable(items).spacing(space.xs))
             .width(MenuSize::Medium)
-            .max_height(MAX_MENU_HEIGHT)
+            .max_height(MENU_MAX_HEIGHT)
             .into()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         TrayService::subscribe().map(|e| Message::Event(Box::new(e)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TrayModule, is_separator, is_visible, renderable_children};
+    use crate::config::{RegexCfg, TrayModuleConfig};
+    use crate::services::tray::dbus::{Layout, LayoutProps};
+
+    fn make_layout(id: i32, type_: Option<&str>, visible: Option<bool>) -> Layout {
+        Layout(
+            id,
+            LayoutProps {
+                children_display: None,
+                label: None,
+                type_: type_.map(|t| t.to_string()),
+                toggle_type: None,
+                toggle_state: None,
+                visible,
+            },
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn is_separator_detects_separator_type() {
+        let layout = make_layout(1, Some("separator"), Some(true));
+        assert!(is_separator(&layout));
+    }
+
+    #[test]
+    fn is_separator_rejects_normal_item() {
+        let layout = make_layout(1, None, Some(true));
+        assert!(!is_separator(&layout));
+    }
+
+    #[test]
+    fn is_visible_treats_none_as_visible() {
+        let layout = make_layout(1, None, None);
+        assert!(is_visible(&layout));
+    }
+
+    #[test]
+    fn is_visible_respects_explicit_false() {
+        let layout = make_layout(1, None, Some(false));
+        assert!(!is_visible(&layout));
+    }
+
+    #[test]
+    fn is_visible_respects_explicit_true() {
+        let layout = make_layout(1, None, Some(true));
+        assert!(is_visible(&layout));
+    }
+
+    #[test]
+    fn renderable_children_drops_trailing_separator_and_invisible() {
+        let children = vec![
+            make_layout(1, Some("separator"), Some(true)),
+            make_layout(2, None, Some(true)),
+            make_layout(3, Some("separator"), Some(true)),
+        ];
+        let rendered: Vec<_> = renderable_children(&children).collect();
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].0, 2);
+    }
+
+    #[test]
+    fn renderable_children_collapses_consecutive_separators() {
+        let children = vec![
+            make_layout(1, None, Some(true)),
+            make_layout(2, Some("separator"), Some(true)),
+            make_layout(3, Some("separator"), Some(true)),
+            make_layout(4, None, Some(true)),
+        ];
+        let rendered: Vec<_> = renderable_children(&children).collect();
+        assert_eq!(rendered.len(), 3);
+        assert_eq!(rendered[0].0, 1);
+        assert_eq!(rendered[1].0, 2);
+        assert_eq!(rendered[2].0, 4);
+    }
+
+    #[test]
+    fn renderable_children_drops_invisible_items() {
+        let children = vec![
+            make_layout(1, None, Some(true)),
+            make_layout(2, None, Some(false)),
+            make_layout(3, None, Some(true)),
+        ];
+        let rendered: Vec<_> = renderable_children(&children).collect();
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[0].0, 1);
+        assert_eq!(rendered[1].0, 3);
+    }
+
+    fn module_with_blocklist(patterns: &[&str]) -> TrayModule {
+        let config = TrayModuleConfig {
+            blocklist: patterns
+                .iter()
+                .map(|p| RegexCfg(regex::Regex::new(p).unwrap()))
+                .collect(),
+            right_click: None,
+        };
+        TrayModule::new(config)
+    }
+
+    #[test]
+    fn is_blocklisted_matches_regex_pattern() {
+        let module = module_with_blocklist(&["^telegram"]);
+        assert!(module.is_blocklisted("telegram"));
+        assert!(!module.is_blocklisted("nextcloud"));
+    }
+
+    #[test]
+    fn is_blocklisted_matches_partial_pattern() {
+        let module = module_with_blocklist(&["blueman"]);
+        assert!(module.is_blocklisted("org.blueman.sni"));
+        assert!(!module.is_blocklisted("telegram"));
+    }
+
+    #[test]
+    fn is_blocklisted_empty_blocklist_matches_nothing() {
+        let module = module_with_blocklist(&[]);
+        assert!(!module.is_blocklisted("anything"));
+    }
+
+    #[test]
+    fn is_blocklisted_multiple_patterns_any_match() {
+        let module = module_with_blocklist(&["telegram", "nextcloud"]);
+        assert!(module.is_blocklisted("nextcloud"));
+        assert!(module.is_blocklisted("telegram"));
+        assert!(!module.is_blocklisted("blueman"));
     }
 }

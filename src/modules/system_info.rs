@@ -4,7 +4,7 @@ use crate::{
     components::icons::{StaticIcon, icon},
     config::{
         CpuFormat, DiskFormat, MemoryFormat, SystemInfoIndicator, SystemInfoModuleConfig,
-        SystemInfoTemperature, TemperatureSensor, TemperatureSensorType,
+        TemperatureSensor, TemperatureSensorType,
     },
     t,
     theme::{lerp_color, use_theme},
@@ -12,43 +12,57 @@ use crate::{
 };
 use iced::{
     Alignment, Element, Length, Subscription, Theme,
-    time::every,
+    futures::channel::mpsc,
     widget::{Column, Row, column, container, row, text},
 };
 use iced_anim::{AnimationBuilder, transition::Easing};
 use itertools::Itertools;
 use log::{info, warn};
-use std::time::{Duration, Instant};
+use std::{
+    net::IpAddr,
+    thread,
+    time::{Duration, Instant},
+};
 use sysinfo::{Components, Disks, Networks, System};
 
-struct NetworkData {
-    ip: std::net::IpAddr,
+#[derive(Debug, Clone)]
+pub struct NetworkData {
+    ip: IpAddr,
     download_speed: u32,
     upload_speed: u32,
     last_check: Instant,
 }
 
-struct MemoryUsage {
+#[derive(Debug, Clone)]
+pub struct MemoryUsage {
     percentage: u32,
+    amount: f32,
     fraction: String,
 }
 
-struct CpuUsage {
+#[derive(Debug, Clone)]
+pub struct CpuUsage {
     percentage: u32,
     frequency: f32,
 }
 
-struct DiskView {
+#[derive(Debug, Clone)]
+pub struct Temperature {
+    celsius: Option<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskView {
     percentage: u32,
     fraction: String,
 }
 
-struct SystemInfoData {
+#[derive(Debug, Clone)]
+pub struct SystemInfoData {
     cpu_usage: CpuUsage,
     memory_usage: MemoryUsage,
     memory_swap_usage: MemoryUsage,
-    temperature: Option<i32>,
-    disks: Vec<(String, DiskView)>,
+    temperature: Temperature,
     network: Option<NetworkData>,
 }
 
@@ -69,18 +83,29 @@ fn find_sensor(components: &Components, matches: &[SensorMatch]) -> Option<Strin
     for m in matches {
         let result = match m {
             SensorMatch::Exact(labels) => find_first_sensor_label(labels, components),
-            SensorMatch::StartsWith(prefixes) => prefixes.iter().find_map(|prefix| {
-                components
-                    .iter()
-                    .find(|c| c.label().starts_with(prefix))
-                    .map(|c| c.label().to_string())
-            }),
-            SensorMatch::Contains(substrs) => substrs.iter().find_map(|substr| {
-                components
-                    .iter()
-                    .find(|c| c.label().to_lowercase().contains(*substr))
-                    .map(|c| c.label().to_string())
-            }),
+            SensorMatch::StartsWith(prefixes) => {
+                let mut result = None;
+                for &prefix in *prefixes {
+                    if let Some(c) = components.iter().find(|c| c.label().starts_with(prefix)) {
+                        result = Some(c.label().to_string());
+                        break;
+                    }
+                }
+                result
+            }
+            SensorMatch::Contains(substrs) => {
+                let mut result = None;
+                for &substr in *substrs {
+                    if let Some(c) = components
+                        .iter()
+                        .find(|c| c.label().to_lowercase().contains(substr))
+                    {
+                        result = Some(c.label().to_string());
+                        break;
+                    }
+                }
+                result
+            }
         };
         if result.is_some() {
             return result;
@@ -94,6 +119,8 @@ static CPU_MATCHES: [SensorMatch<'static>; 2] = [
         "coretemp Package id 0",
         "coretemp Core 0",
         "coretemp Physical id 0",
+        "k10temp Tdie",
+        "k10temp Tctl",
     ]),
     SensorMatch::StartsWith(&["k10temp", "applesmc"]),
 ];
@@ -152,21 +179,17 @@ fn interface_priority(name: &str) -> Option<usize> {
     PREFIXES.iter().position(|p| name.starts_with(p))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn get_system_info(
     system: &mut System,
     components: &mut Components,
-    disks: &mut Disks,
     (networks, last_check): (&mut Networks, Option<Instant>),
-    temperature_config: &SystemInfoTemperature,
+    sensor: &TemperatureSensor,
     cached_sensor_label: &mut Option<String>,
-    mounts: Option<&[String]>,
 ) -> SystemInfoData {
     system.refresh_memory();
     system.refresh_cpu_all();
 
     components.refresh(true);
-    disks.refresh(true);
     networks.refresh(true);
 
     let cpus = system.cpus();
@@ -186,6 +209,7 @@ fn get_system_info(
         } else {
             0
         },
+        amount: utils::bytes_to_gib(used_mem),
         fraction: format!(
             "{:.2}/{:.2}",
             utils::bytes_to_gib(used_mem),
@@ -202,6 +226,7 @@ fn get_system_info(
         } else {
             0
         },
+        amount: utils::bytes_to_gib(used_swap),
         fraction: format!(
             "{:.2}/{:.2}",
             utils::bytes_to_gib(used_swap),
@@ -211,37 +236,89 @@ fn get_system_info(
 
     let temperature_cel = {
         if cached_sensor_label.is_none() {
-            *cached_sensor_label =
-                get_temperature_sensor_label(&temperature_config.sensor, components);
+            *cached_sensor_label = get_temperature_sensor_label(sensor, components);
         }
 
         let mut reading = cached_sensor_label.as_ref().and_then(|label| {
             components
                 .iter()
                 .find(|c| c.label() == label)
-                .and_then(|c| c.temperature().map(|t| t as i32))
+                .and_then(|c| c.temperature().map(|t| t.round() as i32))
         });
 
         if reading.is_none() {
             if let Some(label) = (*cached_sensor_label).take() {
                 warn!("Cached sensor '{}' invalid; re-detecting", label);
             }
-            *cached_sensor_label =
-                get_temperature_sensor_label(&temperature_config.sensor, components);
+            *cached_sensor_label = get_temperature_sensor_label(sensor, components);
             reading = cached_sensor_label.as_ref().and_then(|label| {
                 components
                     .iter()
                     .find(|c| c.label() == label)
-                    .and_then(|c| c.temperature().map(|t| t as i32))
+                    .and_then(|c| c.temperature().map(|t| t.round() as i32))
             });
         }
 
         reading
     };
 
-    let temperature = temperature_cel;
+    let temperature = Temperature {
+        celsius: temperature_cel,
+    };
 
-    let disks: Vec<(String, DiskView)> = disks
+    let elapsed = last_check.map(|v| v.elapsed().as_secs());
+
+    let network = networks
+        .iter()
+        .filter_map(|(name, data)| interface_priority(name).map(|p| (p, data)))
+        .sorted_by_key(|(p, _)| *p)
+        .fold(
+            (None, 0, 0),
+            |(first_ip, total_received, total_transmitted), (_, data)| {
+                let ip = first_ip.or_else(|| {
+                    data.ip_networks()
+                        .iter()
+                        .sorted_by(|a, b| a.addr.cmp(&b.addr))
+                        .next()
+                        .map(|ip| ip.addr)
+                });
+
+                let received = data.received();
+                let transmitted = data.transmitted();
+
+                (
+                    first_ip.or(ip),
+                    total_received + received,
+                    total_transmitted + transmitted,
+                )
+            },
+        );
+
+    let network_speed = |value: u64| {
+        match elapsed {
+            None | Some(0) => 0, // avoid division by zero
+            Some(elapsed) => (value / 1000) as u32 / elapsed as u32,
+        }
+    };
+
+    SystemInfoData {
+        cpu_usage,
+        memory_usage,
+        memory_swap_usage,
+        temperature,
+        network: network.0.map(|ip| NetworkData {
+            ip,
+            download_speed: network_speed(network.1),
+            upload_speed: network_speed(network.2),
+            last_check: Instant::now(),
+        }),
+    }
+}
+
+fn get_disks(disks: &mut Disks, mounts: Option<&[String]>) -> Vec<(String, DiskView)> {
+    disks.refresh(true);
+
+    disks
         .iter()
         .filter(|d| !d.is_removable() && d.total_space() != 0)
         .filter(|d| {
@@ -285,61 +362,83 @@ fn get_system_info(
                 a.0.cmp(&b.0)
             }
         })
-        .collect();
+        .collect()
+}
 
-    let elapsed = last_check.map(|v| v.elapsed().as_secs());
-
-    let network = networks
-        .iter()
-        .filter_map(|(name, data)| interface_priority(name).map(|p| (p, data)))
-        .sorted_by_key(|(p, _)| *p)
-        .fold(
-            (None, 0, 0),
-            |(first_ip, total_received, total_transmitted), (_, data)| {
-                let ip = first_ip.or_else(|| {
-                    data.ip_networks()
-                        .iter()
-                        .sorted_by(|a, b| a.addr.cmp(&b.addr))
-                        .next()
-                        .map(|ip| ip.addr)
-                });
-
-                let received = data.received();
-                let transmitted = data.transmitted();
-
-                (
-                    first_ip.or(ip),
-                    total_received + received,
-                    total_transmitted + transmitted,
-                )
-            },
-        );
-
-    let network_speed = |value: u64| {
-        match elapsed {
-            None | Some(0) => 0, // avoid division by zero
-            Some(elapsed) => (value / 1000) as u32 / elapsed as u32,
-        }
-    };
-
-    SystemInfoData {
-        cpu_usage,
-        memory_usage,
-        memory_swap_usage,
-        temperature,
-        disks,
-        network: network.0.map(|ip| NetworkData {
-            ip,
-            download_speed: network_speed(network.1),
-            upload_speed: network_speed(network.2),
-            last_check: Instant::now(),
-        }),
+/// sysinfo can block on a hung network mount, so it never runs on the UI thread.
+fn spawn_sampler(
+    name: &str,
+    body: impl FnOnce(mpsc::Sender<Message>) + Send + 'static,
+) -> mpsc::Receiver<Message> {
+    let (tx, rx) = mpsc::channel(1);
+    if let Err(e) = thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || body(tx))
+    {
+        warn!("Failed to spawn {name} thread: {e}");
     }
+    rx
+}
+
+fn run_every(
+    interval: Duration,
+    mut tx: mpsc::Sender<Message>,
+    mut sample: impl FnMut() -> Message,
+) {
+    while !tx.is_closed() {
+        let _ = tx.try_send(sample());
+        thread::sleep(interval);
+    }
+}
+
+fn stats_sampler((interval, sensor): &(u64, TemperatureSensor)) -> mpsc::Receiver<Message> {
+    let interval = Duration::from_secs(*interval);
+    let sensor = sensor.clone();
+    spawn_sampler("ashell:sysinfo", move |tx| {
+        let mut system = System::new();
+        let mut components = Components::new_with_refreshed_list();
+        let mut networks = Networks::new_with_refreshed_list();
+        let mut cached_sensor_label = None;
+        let mut last_check = None;
+        let mut logged_sensor = false;
+
+        run_every(interval, tx, move || {
+            let data = get_system_info(
+                &mut system,
+                &mut components,
+                (&mut networks, last_check),
+                &sensor,
+                &mut cached_sensor_label,
+            );
+            last_check = data.network.as_ref().map(|n| n.last_check);
+
+            if !logged_sensor && let Some(label) = cached_sensor_label.as_ref() {
+                info!("Using temperature sensor: {label}");
+                logged_sensor = true;
+            }
+
+            Message::Update(Box::new(data))
+        });
+    })
+}
+
+fn disks_sampler((interval, mounts): &(u64, Option<Vec<String>>)) -> mpsc::Receiver<Message> {
+    let interval = Duration::from_secs(*interval);
+    let mounts = mounts.clone();
+    spawn_sampler("ashell:disks", move |tx| {
+        let mut disks = Disks::new_with_refreshed_list();
+
+        run_every(interval, tx, move || {
+            Message::DisksUpdate(get_disks(&mut disks, mounts.as_deref()))
+        });
+    })
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Update,
+    Update(Box<SystemInfoData>),
+    DisksUpdate(Vec<(String, DiskView)>),
+    ConfigReloaded(SystemInfoModuleConfig),
 }
 
 /// Lerps between normal → warning → danger text colors. Input: 0.0 = normal,
@@ -357,83 +456,24 @@ fn severity_color(theme: &Theme, t: f32) -> iced::Color {
 
 pub struct SystemInfo {
     config: SystemInfoModuleConfig,
-    system: System,
-    components: Components,
-    disks: Disks,
-    networks: Networks,
-    data: SystemInfoData,
-    cached_sensor_label: Option<String>,
+    data: Option<SystemInfoData>,
+    disks: Vec<(String, DiskView)>,
 }
 
 impl SystemInfo {
-    /// Format a KiB/s speed value for display, switching to MB/s above 1000.
-    fn format_speed(speed_kib: u32) -> String {
-        if speed_kib > 1000 {
-            format!("{} MB/s", speed_kib / 1000)
-        } else {
-            format!("{} KB/s", speed_kib)
-        }
-    }
-
-    /// Same as [`format_speed`] but returning the value and unit separately,
-    /// for the compact bar indicator.
-    fn speed_value_and_unit(speed_kib: u32) -> (u32, &'static str) {
-        if speed_kib > 1000 {
-            (speed_kib / 1000, "MB/s")
-        } else {
-            (speed_kib, "KB/s")
-        }
-    }
-
     pub fn new(config: SystemInfoModuleConfig) -> Self {
-        let mut system = System::new();
-        let mut components = Components::new_with_refreshed_list();
-        let mut disks = Disks::new_with_refreshed_list();
-        let mut networks = Networks::new_with_refreshed_list();
-
-        let mut cached_sensor_label = None;
-
-        let data = get_system_info(
-            &mut system,
-            &mut components,
-            &mut disks,
-            (&mut networks, None),
-            &config.temperature,
-            &mut cached_sensor_label,
-            config.disk.mounts.as_deref(),
-        );
-
-        if let Some(label) = cached_sensor_label.as_ref() {
-            info!("Using temperature sensor: {label}");
-        }
-
         Self {
             config,
-            system,
-            components,
-            disks,
-            data,
-            networks,
-            cached_sensor_label,
+            data: None,
+            disks: Vec::new(),
         }
     }
 
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::Update => {
-                self.data = get_system_info(
-                    &mut self.system,
-                    &mut self.components,
-                    &mut self.disks,
-                    (
-                        &mut self.networks,
-                        self.data.network.as_ref().map(|n| n.last_check),
-                    ),
-                    &self.config.temperature,
-                    &mut self.cached_sensor_label,
-                    self.config.disk.mounts.as_deref(),
-                );
-            }
+            Message::Update(data) => self.data = Some(*data),
+            Message::DisksUpdate(disks) => self.disks = disks,
+            Message::ConfigReloaded(config) => self.config = config,
         }
     }
 
@@ -504,41 +544,43 @@ impl SystemInfo {
 
     pub fn menu_view(&'_ self) -> Element<'_, Message> {
         let (font_size, space) = use_theme(|t| (t.font_size, t.space));
+        let data = self.data.as_ref();
         container(
             column!(
                 text(t!("system-info-heading")).size(font_size.lg),
                 divider(),
                 Column::with_capacity(6)
-                    .push(Self::info_element(
+                    .push(data.map(|data| Self::info_element(
                         StaticIcon::Cpu,
                         t!("system-info-cpu-usage"),
                         match self.config.cpu.format {
-                            CpuFormat::Percentage => format!("{}%", self.data.cpu_usage.percentage),
-                            CpuFormat::Frequency =>
-                                format!("{} GHz", self.data.cpu_usage.frequency),
+                            CpuFormat::Percentage => format!("{}%", data.cpu_usage.percentage),
+                            CpuFormat::Frequency => format!("{} GHz", data.cpu_usage.frequency),
                         }
-                    ))
-                    .push(Self::info_element(
+                    )))
+                    .push(data.map(|data| Self::info_element(
                         StaticIcon::Mem,
                         t!("system-info-memory-usage"),
                         match self.config.memory.format {
                             MemoryFormat::Percentage =>
-                                format!("{}%", self.data.memory_usage.percentage),
-                            MemoryFormat::Fraction =>
-                                format!("{} GiB", self.data.memory_usage.fraction),
+                                format!("{}%", data.memory_usage.percentage),
+                            MemoryFormat::Fraction => format!("{} GiB", data.memory_usage.fraction),
+                            MemoryFormat::Amount => format!("{:.1} GiB", data.memory_usage.amount),
                         }
-                    ))
-                    .push(Self::info_element(
+                    )))
+                    .push(data.map(|data| Self::info_element(
                         StaticIcon::Mem,
                         t!("system-info-swap-memory-usage"),
                         match self.config.memory.format {
                             MemoryFormat::Percentage =>
-                                format!("{}%", self.data.memory_swap_usage.percentage),
+                                format!("{}%", data.memory_swap_usage.percentage),
                             MemoryFormat::Fraction =>
-                                format!("{} GiB", self.data.memory_swap_usage.fraction),
+                                format!("{} GiB", data.memory_swap_usage.fraction),
+                            MemoryFormat::Amount =>
+                                format!("{:.1} GiB", data.memory_swap_usage.amount),
                         }
-                    ))
-                    .push(self.data.temperature.map(|cel| {
+                    )))
+                    .push(data.and_then(|data| data.temperature.celsius).map(|cel| {
                         Self::info_element(StaticIcon::Temp, t!("system-info-temperature"), {
                             let units = self.config.temperature.resolved_units();
                             format!("{}{}", units.convert_celsius(cel), units.symbol())
@@ -546,8 +588,7 @@ impl SystemInfo {
                     }))
                     .push(
                         Column::with_children(
-                            self.data
-                                .disks
+                            self.disks
                                 .iter()
                                 .map(|(mount_point, usage)| {
                                     Self::info_element(
@@ -567,7 +608,7 @@ impl SystemInfo {
                         )
                         .spacing(space.xxs),
                     )
-                    .push(self.data.network.as_ref().map(|network| {
+                    .push(data.and_then(|data| data.network.as_ref()).map(|network| {
                         Column::with_children(vec![
                             Self::info_element(
                                 StaticIcon::IpAddress,
@@ -577,12 +618,20 @@ impl SystemInfo {
                             Self::info_element(
                                 StaticIcon::DownloadSpeed,
                                 t!("system-info-download-speed"),
-                                Self::format_speed(network.download_speed),
+                                if network.download_speed > 1000 {
+                                    format!("{} MB/s", network.download_speed / 1000)
+                                } else {
+                                    format!("{} KB/s", network.download_speed)
+                                },
                             ),
                             Self::info_element(
                                 StaticIcon::UploadSpeed,
                                 t!("system-info-upload-speed"),
-                                Self::format_speed(network.upload_speed),
+                                if network.upload_speed > 1000 {
+                                    format!("{} MB/s", network.upload_speed / 1000)
+                                } else {
+                                    format!("{} KB/s", network.upload_speed)
+                                },
                             ),
                         ])
                     }))
@@ -597,71 +646,82 @@ impl SystemInfo {
 
     pub fn view(&'_ self) -> Element<'_, Message> {
         let space = use_theme(|t| t.space);
+        let data = self.data.as_ref();
         let indicators = self.config.indicators.iter().filter_map(|i| match i {
-            SystemInfoIndicator::Cpu => Some(Self::indicator_info_element(
-                StaticIcon::Cpu,
-                match self.config.cpu.format {
-                    CpuFormat::Percentage => (self.data.cpu_usage.percentage.to_string(), "%"),
-                    CpuFormat::Frequency => (self.data.cpu_usage.frequency.to_string(), " GHz"),
-                },
-                Some((
-                    self.data.cpu_usage.percentage,
-                    self.config.cpu.warn_threshold,
-                    self.config.cpu.alert_threshold,
-                )),
-                None,
-            )),
-
-            SystemInfoIndicator::Memory => Some(Self::indicator_info_element(
-                StaticIcon::Mem,
-                match self.config.memory.format {
-                    MemoryFormat::Percentage => {
-                        (self.data.memory_usage.percentage.to_string(), "%")
-                    }
-                    MemoryFormat::Fraction => (self.data.memory_usage.fraction.clone(), " GiB"),
-                },
-                Some((
-                    self.data.memory_usage.percentage,
-                    self.config.memory.warn_threshold,
-                    self.config.memory.alert_threshold,
-                )),
-                None,
-            )),
-
-            SystemInfoIndicator::MemorySwap => Some(Self::indicator_info_element(
-                StaticIcon::Mem,
-                match self.config.memory.format {
-                    MemoryFormat::Percentage => {
-                        (self.data.memory_swap_usage.percentage.to_string(), "%")
-                    }
-                    MemoryFormat::Fraction => {
-                        (self.data.memory_swap_usage.fraction.clone(), " GiB")
-                    }
-                },
-                Some((
-                    self.data.memory_swap_usage.percentage,
-                    self.config.memory.warn_threshold,
-                    self.config.memory.alert_threshold,
-                )),
-                Some(t!("system-info-swap-indicator-prefix")),
-            )),
-
-            SystemInfoIndicator::Temperature => self.data.temperature.map(|cel| {
-                let units = self.config.temperature.resolved_units();
-                let value = units.convert_celsius(cel);
+            SystemInfoIndicator::Cpu => data.map(|data| {
                 Self::indicator_info_element(
-                    StaticIcon::Temp,
-                    (value, units.symbol()),
+                    StaticIcon::Cpu,
+                    match self.config.cpu.format {
+                        CpuFormat::Percentage => (data.cpu_usage.percentage.to_string(), "%"),
+                        CpuFormat::Frequency => (data.cpu_usage.frequency.to_string(), " GHz"),
+                    },
                     Some((
-                        value,
-                        self.config.temperature.warn_threshold(),
-                        self.config.temperature.alert_threshold(),
+                        data.cpu_usage.percentage,
+                        self.config.cpu.warn_threshold,
+                        self.config.cpu.alert_threshold,
                     )),
                     None,
                 )
             }),
+
+            SystemInfoIndicator::Memory => data.map(|data| {
+                Self::indicator_info_element(
+                    StaticIcon::Mem,
+                    match self.config.memory.format {
+                        MemoryFormat::Percentage => (data.memory_usage.percentage.to_string(), "%"),
+                        MemoryFormat::Fraction => (data.memory_usage.fraction.clone(), " GiB"),
+                        MemoryFormat::Amount => {
+                            (format!("{:.1}", data.memory_usage.amount), " GiB")
+                        }
+                    },
+                    Some((
+                        data.memory_usage.percentage,
+                        self.config.memory.warn_threshold,
+                        self.config.memory.alert_threshold,
+                    )),
+                    None,
+                )
+            }),
+
+            SystemInfoIndicator::MemorySwap => data.map(|data| {
+                Self::indicator_info_element(
+                    StaticIcon::Mem,
+                    match self.config.memory.format {
+                        MemoryFormat::Percentage => {
+                            (data.memory_swap_usage.percentage.to_string(), "%")
+                        }
+                        MemoryFormat::Fraction => (data.memory_swap_usage.fraction.clone(), " GiB"),
+                        MemoryFormat::Amount => {
+                            (format!("{:.1}", data.memory_swap_usage.amount), " GiB")
+                        }
+                    },
+                    Some((
+                        data.memory_swap_usage.percentage,
+                        self.config.memory.warn_threshold,
+                        self.config.memory.alert_threshold,
+                    )),
+                    Some(t!("system-info-swap-indicator-prefix")),
+                )
+            }),
+
+            SystemInfoIndicator::Temperature => {
+                data.and_then(|data| data.temperature.celsius).map(|cel| {
+                    let units = self.config.temperature.resolved_units();
+                    let value = units.convert_celsius(cel);
+                    Self::indicator_info_element(
+                        StaticIcon::Temp,
+                        (value, units.symbol()),
+                        Some((
+                            value,
+                            self.config.temperature.warn_threshold(),
+                            self.config.temperature.alert_threshold(),
+                        )),
+                        None,
+                    )
+                })
+            }
             SystemInfoIndicator::Disk(config) => {
-                self.data.disks.iter().find_map(|(disk_mount, disk)| {
+                self.disks.iter().find_map(|(disk_mount, disk)| {
                     if disk_mount == &config.path {
                         Some(Self::indicator_info_element(
                             StaticIcon::Drive,
@@ -681,30 +741,58 @@ impl SystemInfo {
                     }
                 })
             }
-            SystemInfoIndicator::IpAddress => self.data.network.as_ref().map(|network| {
-                Self::indicator_info_element(
-                    StaticIcon::IpAddress,
-                    (network.ip.to_string(), ""),
-                    None::<(u32, u32, u32)>,
-                    None,
-                )
-            }),
-            SystemInfoIndicator::DownloadSpeed => self.data.network.as_ref().map(|network| {
-                Self::indicator_info_element(
-                    StaticIcon::DownloadSpeed,
-                    Self::speed_value_and_unit(network.download_speed),
-                    None::<(u32, u32, u32)>,
-                    None,
-                )
-            }),
-            SystemInfoIndicator::UploadSpeed => self.data.network.as_ref().map(|network| {
-                Self::indicator_info_element(
-                    StaticIcon::UploadSpeed,
-                    Self::speed_value_and_unit(network.upload_speed),
-                    None::<(u32, u32, u32)>,
-                    None,
-                )
-            }),
+            SystemInfoIndicator::IpAddress => {
+                data.and_then(|data| data.network.as_ref()).map(|network| {
+                    Self::indicator_info_element(
+                        StaticIcon::IpAddress,
+                        (network.ip.to_string(), ""),
+                        None::<(u32, u32, u32)>,
+                        None,
+                    )
+                })
+            }
+            SystemInfoIndicator::DownloadSpeed => {
+                data.and_then(|data| data.network.as_ref()).map(|network| {
+                    Self::indicator_info_element(
+                        StaticIcon::DownloadSpeed,
+                        (
+                            if network.download_speed > 1000 {
+                                network.download_speed / 1000
+                            } else {
+                                network.download_speed
+                            },
+                            if network.download_speed > 1000 {
+                                "MB/s"
+                            } else {
+                                "KB/s"
+                            },
+                        ),
+                        None::<(u32, u32, u32)>,
+                        None,
+                    )
+                })
+            }
+            SystemInfoIndicator::UploadSpeed => {
+                data.and_then(|data| data.network.as_ref()).map(|network| {
+                    Self::indicator_info_element(
+                        StaticIcon::UploadSpeed,
+                        (
+                            if network.upload_speed > 1000 {
+                                network.upload_speed / 1000
+                            } else {
+                                network.upload_speed
+                            },
+                            if network.upload_speed > 1000 {
+                                "MB/s"
+                            } else {
+                                "KB/s"
+                            },
+                        ),
+                        None::<(u32, u32, u32)>,
+                        None,
+                    )
+                })
+            }
         });
 
         Row::with_children(indicators)
@@ -714,6 +802,15 @@ impl SystemInfo {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        every(Duration::from_secs(self.config.interval)).map(|_| Message::Update)
+        Subscription::batch([
+            Subscription::run_with(
+                (self.config.interval, self.config.temperature.sensor.clone()),
+                stats_sampler,
+            ),
+            Subscription::run_with(
+                (self.config.interval, self.config.disk.mounts.clone()),
+                disks_sampler,
+            ),
+        ])
     }
 }

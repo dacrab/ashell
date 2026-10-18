@@ -1,19 +1,25 @@
-use super::impl_service_subscription;
 use super::{ReadOnlyService, Service, ServiceEvent};
 use crate::{
-    components::icons::StaticIcon, services::throttle::ThrottleExt, utils::IndicatorState,
+    components::icons::StaticIcon,
+    services::{throttle::ThrottleExt, upower::dbus::KbdBacklightProxy},
+    utils::{IndicatorState, remote_value::Remote},
 };
 use dbus::{DeviceProxy, PowerProfilesProxy, SystemBattery, UPowerDbus, UPowerProxy, UpDeviceKind};
-use iced::futures::{
-    SinkExt, Stream, StreamExt,
-    channel::mpsc::Sender,
-    stream::{once, pending, select_all},
-    stream_select,
+use iced::{
+    Subscription,
+    futures::{
+        SinkExt, Stream, StreamExt,
+        channel::mpsc::Sender,
+        stream::{once, pending, select_all},
+        stream_select,
+    },
+    stream::channel,
 };
-use log::{error, warn};
+use log::{debug, error, warn};
 use serde::Deserialize;
-use std::{fmt, pin::Pin, time::Duration};
-use tokio::time::sleep;
+use std::{any::TypeId, fmt, time::Duration};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use zbus::zvariant::ObjectPath;
 
 mod dbus;
@@ -65,10 +71,25 @@ pub struct BatteryData {
     pub capacity: i64,
     pub status: BatteryStatus,
     pub is_discharging: bool,
+    pub health: Option<BatteryHealth>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BatteryHealth {
+    pub energy_full: f64,
+    pub energy_full_design: f64,
+    pub charge_cycles: Option<i32>,
+}
+
+impl BatteryHealth {
+    /// Current full capacity as a share of the design capacity, capped at 100%.
+    pub fn percentage(&self) -> f64 {
+        (self.energy_full / self.energy_full_design * 100.0).min(100.0)
+    }
 }
 
 impl BatteryData {
-    pub fn indicator_state(&self) -> IndicatorState {
+    pub fn get_indicator_state(&self) -> IndicatorState {
         match self {
             BatteryData {
                 status: BatteryStatus::Charging(_),
@@ -90,7 +111,7 @@ impl BatteryData {
         }
     }
 
-    pub fn icon(&self) -> StaticIcon {
+    pub fn get_icon(&self) -> StaticIcon {
         match self {
             BatteryData {
                 status: BatteryStatus::Charging(_),
@@ -129,9 +150,9 @@ pub struct Peripheral {
 }
 
 impl Peripheral {
-    pub fn icon_state(&self) -> StaticIcon {
+    pub fn get_icon_state(&self) -> StaticIcon {
         let get_type_icon =
-            |bat_level: BatLevel| -> StaticIcon { self.kind.battery_icon(bat_level) };
+            |bat_level: BatLevel| -> StaticIcon { self.kind.get_battery_icon(bat_level) };
 
         match self.data {
             BatteryData {
@@ -191,7 +212,7 @@ impl fmt::Display for PeripheralDeviceKind {
 }
 
 impl PeripheralDeviceKind {
-    pub fn icon(self) -> StaticIcon {
+    pub fn get_icon(self) -> StaticIcon {
         match self {
             PeripheralDeviceKind::Keyboard => StaticIcon::Keyboard,
             PeripheralDeviceKind::Mouse => StaticIcon::Mouse,
@@ -200,7 +221,7 @@ impl PeripheralDeviceKind {
         }
     }
 
-    fn battery_icon(self, level: BatLevel) -> StaticIcon {
+    fn get_battery_icon(self, level: BatLevel) -> StaticIcon {
         let icons = match self {
             PeripheralDeviceKind::Keyboard => &KEYBOARD_BATTERY_ICONS,
             PeripheralDeviceKind::Mouse => &MOUSE_BATTERY_ICONS,
@@ -232,6 +253,7 @@ pub enum UPowerEvent {
     UpdatePeripherals(Vec<Peripheral>),
     NoBattery,
     UpdatePowerProfile(PowerProfile),
+    UpdateKbdBrightness(u32),
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -281,11 +303,20 @@ impl From<PowerProfile> for StaticIcon {
 }
 
 #[derive(Debug, Clone)]
+pub struct KbdBacklight {
+    pub max: u32,
+    pub current: Remote<u32>,
+    pub retained: Option<u32>,
+    commander: UnboundedSender<u32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct UPowerService {
     pub system_battery: Option<BatteryData>,
     pub charge_limit: Option<ChargeLimit>,
     pub peripherals: Vec<Peripheral>,
     pub power_profile: PowerProfile,
+    pub kbd_backlight: Option<KbdBacklight>,
     conn: zbus::Connection,
 }
 
@@ -321,10 +352,27 @@ impl ReadOnlyService for UPowerService {
             UPowerEvent::UpdatePowerProfile(profile) => {
                 self.power_profile = profile;
             }
+            UPowerEvent::UpdateKbdBrightness(kbd_brightness) => {
+                if let Some(kbd_backlight) = self.kbd_backlight.as_mut() {
+                    kbd_backlight.current.receive(kbd_brightness);
+                } else {
+                    error!("Keyboard backlight not initialised")
+                }
+            }
         }
     }
 
-    impl_service_subscription!(UPowerService, 100);
+    fn subscribe() -> Subscription<ServiceEvent<Self>> {
+        Subscription::run_with(TypeId::of::<Self>(), |_| {
+            channel(100, async |mut output| {
+                let mut state = State::Init;
+
+                loop {
+                    state = UPowerService::start_listening(state, &mut output).await;
+                }
+            })
+        })
+    }
 }
 
 impl UPowerService {
@@ -335,6 +383,7 @@ impl UPowerService {
         Option<ChargeLimit>,
         Vec<Peripheral>,
         PowerProfile,
+        Option<KbdBacklight>,
     )> {
         let system_battery = UPowerService::initialize_system_battery_data(conn).await?;
         let charge_limit = if let Some((_, battery)) = system_battery.as_ref() {
@@ -344,18 +393,47 @@ impl UPowerService {
         };
         let peripherals = UPowerService::initialize_peripheral_data(conn).await?;
 
-        let power_profile = match UPowerService::initialize_power_profile_data(conn).await {
-            Ok(power_profile) => power_profile,
-            Err(err) => {
+        let power_profile = UPowerService::initialize_power_profile_data(conn).await;
+        let kbd_backlight = UPowerService::initialize_kbd_backlight_data(conn).await;
+
+        match (system_battery, power_profile) {
+            (Some(battery), Ok(power_profile)) => Ok((
+                Some((battery.0, battery.1.get_devices_path())),
+                charge_limit,
+                peripherals,
+                power_profile,
+                kbd_backlight,
+            )),
+            (Some(battery), Err(err)) => {
                 warn!("Failed to get power profile: {err}");
-                PowerProfile::Unknown
+
+                Ok((
+                    Some((battery.0, battery.1.get_devices_path())),
+                    charge_limit,
+                    peripherals,
+                    PowerProfile::Unknown,
+                    kbd_backlight,
+                ))
             }
-        };
+            (None, Ok(power_profile)) => Ok((
+                None,
+                charge_limit,
+                peripherals,
+                power_profile,
+                kbd_backlight,
+            )),
+            (None, Err(err)) => {
+                warn!("Failed to get power profile: {err}");
 
-        let system_battery =
-            system_battery.map(|battery| (battery.0, battery.1.get_devices_path()));
-
-        Ok((system_battery, charge_limit, peripherals, power_profile))
+                Ok((
+                    None,
+                    charge_limit,
+                    peripherals,
+                    PowerProfile::Unknown,
+                    kbd_backlight,
+                ))
+            }
+        }
     }
 
     async fn initialize_power_profile_data(
@@ -369,6 +447,48 @@ impl UPowerService {
             .map(PowerProfile::from)?;
 
         Ok(profile)
+    }
+
+    async fn initialize_kbd_backlight_data(conn: &zbus::Connection) -> Option<KbdBacklight> {
+        let proxy = KbdBacklightProxy::new(conn).await.ok()?;
+        let mut current = Remote::<u32>::default();
+        current.receive(Self::safe_cast(proxy.get_brightness().await.ok()?));
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        Self::start_commander(conn.clone(), rx);
+
+        Some(KbdBacklight {
+            max: Self::safe_cast(proxy.get_max_brightness().await.ok()?),
+            current,
+            retained: None,
+            commander: tx,
+        })
+    }
+
+    fn start_commander(conn: zbus::Connection, to_server_rx: UnboundedReceiver<u32>) {
+        tokio::spawn(async move {
+            let mut stream =
+                UnboundedReceiverStream::new(to_server_rx).throttle(Duration::from_millis(100));
+            while let Some(brightness) = stream.next().await {
+                match KbdBacklightProxy::new(&conn).await {
+                    Ok(proxy) => {
+                        if let Err(err) = proxy.set_brightness(brightness as i32).await {
+                            error!("Failed to set keyboard backlight: {err}");
+                        }
+                    }
+                    Err(err) => error!("Failed to connect to keyboard backlight: {err}"),
+                }
+            }
+        });
+    }
+
+    // DBUS Exposes keyboard backlight as a signed integer
+    // Here we clamp it to 0 in case negative value is sent
+    fn safe_cast(value: i32) -> u32 {
+        u32::try_from(value).unwrap_or_else(|error| {
+            warn!("Received negative keyboard backlight value: {error}");
+            0
+        })
     }
 
     async fn initialize_system_battery_data(
@@ -400,11 +520,14 @@ impl UPowerService {
                     }
                 };
 
+                let health = battery.health().await;
+
                 Ok(Some((
                     BatteryData {
                         capacity: percentage,
                         status: state,
                         is_discharging,
+                        health,
                     },
                     battery,
                 )))
@@ -486,6 +609,7 @@ impl UPowerService {
                     capacity: percentage as i64,
                     status: state,
                     is_discharging: state_raw == 2,
+                    health: None,
                 },
                 device,
             });
@@ -510,43 +634,12 @@ impl UPowerService {
         system_battery_devices: Option<&Vec<ObjectPath<'static>>>,
         peripheral_paths: &[ObjectPath<'static>],
     ) -> anyhow::Result<impl Stream<Item = UPowerEvent> + use<>> {
-        // Requery to run when a watched device emits a battery signal.
-        #[derive(Clone, Copy)]
-        enum BatteryRefresh {
-            SystemBattery,
-            Peripherals,
-        }
-
-        impl BatteryRefresh {
-            async fn run(self, conn: zbus::Connection) -> Option<UPowerEvent> {
-                match self {
-                    BatteryRefresh::SystemBattery => {
-                        UPowerService::initialize_system_battery_data(&conn)
-                            .await
-                            .ok()
-                            .flatten()
-                            .map(|(data, _)| UPowerEvent::UpdateSystemBattery(data))
-                    }
-                    BatteryRefresh::Peripherals => UPowerService::initialize_peripheral_data(&conn)
-                        .await
-                        .ok()
-                        .map(UPowerEvent::UpdatePeripherals),
-                }
-            }
-        }
-
-        // Build a battery-signal stream (state/percentage/time-to-full and
-        // time-to-empty, the latter two throttled) for the given devices,
-        // requering via `refresh` on each signal.
-        async fn battery_events(
-            conn: &zbus::Connection,
-            paths: &[ObjectPath<'static>],
-            refresh: BatteryRefresh,
-        ) -> anyhow::Result<Pin<Box<dyn Stream<Item = UPowerEvent> + Send>>> {
+        let system_battery_event = if let Some(battery_devices) = system_battery_devices {
             let upower = UPowerDbus::new(conn).await?;
 
             let mut events = Vec::new();
-            for device_path in paths {
+
+            for device_path in battery_devices {
                 let device = upower.get_device(device_path).await?;
 
                 events.push(
@@ -568,22 +661,24 @@ impl UPowerService {
                         let conn = conn.clone();
                         move |_| {
                             let conn = conn.clone();
-                            async move { refresh.run(conn).await }
+                            async move {
+                                if let Some((data, _)) = Self::initialize_system_battery_data(&conn)
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                {
+                                    Some(UPowerEvent::UpdateSystemBattery(data))
+                                } else {
+                                    None
+                                }
+                            }
                         }
                     })
                     .boxed(),
                 );
             }
 
-            Ok(if events.is_empty() {
-                pending().boxed()
-            } else {
-                select_all(events).boxed()
-            })
-        }
-
-        let system_battery_event = if let Some(battery_devices) = system_battery_devices {
-            battery_events(conn, battery_devices, BatteryRefresh::SystemBattery).await?
+            select_all(events).boxed()
         } else {
             once(async {}).map(|_| UPowerEvent::NoBattery).boxed()
         };
@@ -592,6 +687,7 @@ impl UPowerService {
             let upower = UPowerDbus::new(conn).await?;
 
             let mut events = Vec::new();
+
             for device_path in battery_devices {
                 let device = upower.get_device(device_path).await?;
 
@@ -632,7 +728,45 @@ impl UPowerService {
         };
 
         let peripheral_event = if !peripheral_paths.is_empty() {
-            battery_events(conn, peripheral_paths, BatteryRefresh::Peripherals).await?
+            let upower = UPowerDbus::new(conn).await?;
+
+            let mut events = Vec::new();
+
+            for device_path in peripheral_paths {
+                let device = upower.get_device(device_path).await?;
+
+                events.push(
+                    stream_select!(
+                        device.receive_state_changed().await.map(|_| ()),
+                        device.receive_percentage_changed().await.map(|_| ()),
+                        device
+                            .receive_time_to_full_changed()
+                            .await
+                            .throttle(Duration::from_secs(30))
+                            .map(|_| ()),
+                        device
+                            .receive_time_to_empty_changed()
+                            .await
+                            .throttle(Duration::from_secs(30))
+                            .map(|_| ()),
+                    )
+                    .filter_map({
+                        let conn = conn.clone();
+                        move |_| {
+                            let conn = conn.clone();
+                            async move {
+                                Self::initialize_peripheral_data(&conn)
+                                    .await
+                                    .ok()
+                                    .map(UPowerEvent::UpdatePeripherals)
+                            }
+                        }
+                    })
+                    .boxed(),
+                );
+            }
+
+            select_all(events).boxed()
         } else {
             pending().boxed()
         };
@@ -686,13 +820,42 @@ impl UPowerService {
                     )
                 });
 
+        let kbd_backlight_event = async {
+            let proxy = KbdBacklightProxy::new(conn).await?;
+            proxy.receive_brightness_changed().await
+        }
+        .await
+        .map(|stream| {
+            stream
+                .filter_map({
+                    |brightness_changed| async move {
+                        match brightness_changed.args() {
+                            Ok(args) => {
+                                let value = Self::safe_cast(*args.value());
+                                Some(UPowerEvent::UpdateKbdBrightness(value))
+                            }
+                            Err(err) => {
+                                error!("Failed to fetch keyboard backlight: {err}");
+                                None
+                            }
+                        }
+                    }
+                })
+                .boxed()
+        })
+        .unwrap_or_else(|err| {
+            debug!("Keyboard backlight not found: {err}");
+            pending().boxed()
+        });
+
         Ok(stream_select!(
             system_battery_event,
             charge_limit_event,
             peripheral_event,
             device_added_event,
             device_removed_event,
-            power_profile_event
+            power_profile_event,
+            kbd_backlight_event
         ))
     }
 
@@ -700,7 +863,13 @@ impl UPowerService {
         match state {
             State::Init => match zbus::Connection::system().await {
                 Ok(conn) => match UPowerService::initialize_data(&conn).await {
-                    Ok((system_battery, charge_limit, peripherals, power_profile)) => {
+                    Ok((
+                        system_battery,
+                        charge_limit,
+                        peripherals,
+                        power_profile,
+                        kbd_backlight,
+                    )) => {
                         let peripheral_paths = peripherals
                             .iter()
                             .map(|p| p.device.inner().path().clone())
@@ -711,6 +880,7 @@ impl UPowerService {
                             charge_limit,
                             peripherals,
                             power_profile,
+                            kbd_backlight,
                             conn: conn.clone(),
                         };
                         let _ = output.send(ServiceEvent::Init(service)).await;
@@ -747,11 +917,9 @@ impl UPowerService {
                 }
             }
             State::Error => {
-                error!("UPower service error, retrying in 5 seconds");
+                let _ = pending::<u8>().next().await;
 
-                sleep(Duration::from_secs(5)).await;
-
-                State::Init
+                State::Error
             }
         }
     }
@@ -786,86 +954,96 @@ fn battery_status_from_timed_system_state(state: dbus::DeviceState, time: i64) -
 pub enum UPowerCommand {
     TogglePowerProfile,
     ToggleChargeLimit,
+    SetKbdBacklight(u32),
 }
 
 impl Service for UPowerService {
     type Command = UPowerCommand;
 
     fn command(&mut self, command: Self::Command) -> iced::Task<ServiceEvent<Self>> {
-        iced::Task::perform(
-            {
+        match command {
+            UPowerCommand::SetKbdBacklight(brightness) => {
+                if let Some(kbd_backlight) = self.kbd_backlight.as_ref() {
+                    let _ = kbd_backlight.commander.send(brightness);
+                } else {
+                    error!("Keyboard backlight not initialised");
+                }
+                iced::Task::none()
+            }
+            UPowerCommand::TogglePowerProfile => {
                 let conn = self.conn.clone();
                 let power_profile = self.power_profile;
+                iced::Task::perform(
+                    async move {
+                        let Some(powerprofiles) = PowerProfilesProxy::new(&conn).await.ok() else {
+                            return UPowerEvent::UpdatePowerProfile(power_profile);
+                        };
+                        let current_profile = power_profile;
+                        let power_profile = match current_profile {
+                            PowerProfile::Balanced => {
+                                let _ = powerprofiles.set_active_profile("performance").await;
+
+                                PowerProfile::Performance
+                            }
+                            PowerProfile::Performance => {
+                                let _ = powerprofiles.set_active_profile("power-saver").await;
+
+                                PowerProfile::PowerSaver
+                            }
+                            PowerProfile::PowerSaver => {
+                                let _ = powerprofiles.set_active_profile("balanced").await;
+
+                                PowerProfile::Balanced
+                            }
+                            PowerProfile::Unknown => PowerProfile::Unknown,
+                        };
+
+                        UPowerEvent::UpdatePowerProfile(power_profile)
+                    },
+                    ServiceEvent::Update,
+                )
+            }
+            UPowerCommand::ToggleChargeLimit => {
+                let conn = self.conn.clone();
                 let charge_limit = self.charge_limit.clone();
-                async move {
-                    match command {
-                        UPowerCommand::TogglePowerProfile => {
-                            let Some(powerprofiles) = PowerProfilesProxy::new(&conn).await.ok()
-                            else {
-                                return UPowerEvent::UpdatePowerProfile(power_profile);
-                            };
-                            let current_profile = power_profile;
-                            let power_profile = match current_profile {
-                                PowerProfile::Balanced => {
-                                    let _ = powerprofiles.set_active_profile("performance").await;
+                iced::Task::perform(
+                    async move {
+                        let Some(charge_limit) = charge_limit else {
+                            return UPowerEvent::UpdateChargeLimit(None);
+                        };
+                        let Ok(device) =
+                            DeviceProxy::builder(&conn).path(charge_limit.device_path.clone())
+                        else {
+                            return UPowerEvent::UpdateChargeLimit(Some(charge_limit));
+                        };
+                        let Ok(device) = device.build().await else {
+                            return UPowerEvent::UpdateChargeLimit(Some(charge_limit));
+                        };
 
-                                    PowerProfile::Performance
-                                }
-                                PowerProfile::Performance => {
-                                    let _ = powerprofiles.set_active_profile("power-saver").await;
+                        let target_enabled = !charge_limit.enabled;
 
-                                    PowerProfile::PowerSaver
-                                }
-                                PowerProfile::PowerSaver => {
-                                    let _ = powerprofiles.set_active_profile("balanced").await;
-
-                                    PowerProfile::Balanced
-                                }
-                                PowerProfile::Unknown => PowerProfile::Unknown,
-                            };
-
-                            UPowerEvent::UpdatePowerProfile(power_profile)
+                        if let Err(err) = device.enable_charge_threshold(target_enabled).await {
+                            warn!("Failed to toggle battery charge limit: {err}");
+                            return UPowerEvent::UpdateChargeLimit(Some(charge_limit));
                         }
-                        UPowerCommand::ToggleChargeLimit => {
-                            let Some(charge_limit) = charge_limit else {
-                                return UPowerEvent::UpdateChargeLimit(None);
-                            };
-                            let Ok(device) =
-                                DeviceProxy::builder(&conn).path(charge_limit.device_path.clone())
-                            else {
-                                return UPowerEvent::UpdateChargeLimit(Some(charge_limit));
-                            };
-                            let Ok(device) = device.build().await else {
-                                return UPowerEvent::UpdateChargeLimit(Some(charge_limit));
-                            };
 
-                            let target_enabled = !charge_limit.enabled;
-
-                            if let Err(err) = device.enable_charge_threshold(target_enabled).await {
-                                warn!("Failed to toggle battery charge limit: {err}");
-                                return UPowerEvent::UpdateChargeLimit(Some(charge_limit));
-                            }
-
-                            match Self::initialize_charge_limit_data(&conn).await {
-                                Ok(Some(new_data)) => {
-                                    UPowerEvent::UpdateChargeLimit(Some(new_data))
-                                }
-                                _ => {
-                                    warn!(
-                                        "Failed to refresh charge limit data after toggle, using optimistic state"
-                                    );
-                                    UPowerEvent::UpdateChargeLimit(Some(ChargeLimit {
-                                        enabled: target_enabled,
-                                        ..charge_limit
-                                    }))
-                                }
+                        match Self::initialize_charge_limit_data(&conn).await {
+                            Ok(Some(new_data)) => UPowerEvent::UpdateChargeLimit(Some(new_data)),
+                            _ => {
+                                warn!(
+                                    "Failed to refresh charge limit data after toggle, using optimistic state"
+                                );
+                                UPowerEvent::UpdateChargeLimit(Some(ChargeLimit {
+                                    enabled: target_enabled,
+                                    ..charge_limit
+                                }))
                             }
                         }
-                    }
-                }
-            },
-            ServiceEvent::Update,
-        )
+                    },
+                    ServiceEvent::Update,
+                )
+            }
+        }
     }
 }
 
@@ -911,9 +1089,10 @@ mod tests {
             capacity: 50,
             status: BatteryStatus::Unknown,
             is_discharging: false,
+            health: None,
         };
 
-        assert!(matches!(battery.icon(), StaticIcon::Battery0));
+        assert!(matches!(battery.get_icon(), StaticIcon::Battery0));
     }
 
     #[test]
@@ -922,9 +1101,10 @@ mod tests {
             capacity: 10,
             status: BatteryStatus::Full,
             is_discharging: false,
+            health: None,
         };
 
-        assert!(matches!(battery.icon(), StaticIcon::Battery4));
+        assert!(matches!(battery.get_icon(), StaticIcon::Battery4));
     }
 
     #[test]
@@ -933,9 +1113,10 @@ mod tests {
             capacity: 10,
             status: BatteryStatus::NotCharging,
             is_discharging: false,
+            health: None,
         };
 
-        assert!(matches!(battery.icon(), StaticIcon::Battery0));
+        assert!(matches!(battery.get_icon(), StaticIcon::Battery0));
     }
 
     #[test]

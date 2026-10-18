@@ -1,9 +1,9 @@
-use super::impl_service_subscription;
 use super::{ReadOnlyService, Service, ServiceEvent};
 use crate::utils::remote_value::Remote;
 use iced::{
-    Task,
+    Subscription, Task,
     futures::{SinkExt, channel::mpsc::Sender},
+    stream::channel,
 };
 use itertools::Either;
 pub use libpulse_binding::def::DevicePortType;
@@ -11,7 +11,7 @@ use libpulse_binding::{
     callbacks::ListResult,
     context::{
         self, Context, FlagSet,
-        introspect::{Introspector, SinkInfo, SinkPortInfo, SourceInfo, SourcePortInfo},
+        introspect::{Introspector, SinkInfo, SourceInfo},
         subscribe::InterestMaskSet,
     },
     def::PortAvailable,
@@ -67,8 +67,12 @@ pub struct Route<'a> {
 impl<'a> fmt::Display for Route<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.port {
-            Some(port) => write!(f, "{}: {}", port.description, self.device.description),
-            None => write!(f, "{}", self.device.description),
+            // The node description already names the port when it is the only one,
+            // so the prefix is only needed to tell apart ports of the same node
+            Some(port) if self.device.ports.len() > 1 => {
+                write!(f, "{}: {}", port.description, self.device.description)
+            }
+            _ => write!(f, "{}", self.device.description),
         }
     }
 }
@@ -80,13 +84,13 @@ pub struct ServerInfo {
 }
 
 pub trait ChannelVolumesExt {
-    fn volume(&self) -> u32;
+    fn get_volume(&self) -> u32;
 
     fn scaled(&self, max: u32) -> Option<ChannelVolumes>;
 }
 
 impl ChannelVolumesExt for ChannelVolumes {
-    fn volume(&self) -> u32 {
+    fn get_volume(&self) -> u32 {
         self.max().0
     }
 
@@ -230,7 +234,7 @@ impl AudioService {
                 if source.is_mute {
                     0
                 } else {
-                    source.volume.volume()
+                    source.volume.get_volume()
                 }
             })
             .unwrap_or_default();
@@ -244,7 +248,7 @@ impl AudioService {
                 if sink.is_mute {
                     0
                 } else {
-                    sink.volume.volume()
+                    sink.volume.get_volume()
                 }
             })
             .unwrap_or_default();
@@ -337,7 +341,17 @@ impl ReadOnlyService for AudioService {
         }
     }
 
-    impl_service_subscription!(AudioService, 100);
+    fn subscribe() -> iced::Subscription<super::ServiceEvent<Self>> {
+        Subscription::run_with(TypeId::of::<Self>(), |_| {
+            channel(100, async |mut output| {
+                let mut state = State::Init;
+
+                loop {
+                    state = AudioService::start_listening(state, &mut output).await;
+                }
+            })
+        })
+    }
 }
 
 pub enum AudioCommand {
@@ -457,6 +471,7 @@ impl PulseAudioServer {
 
         context.connect(None, FlagSet::NOFLAGS, None)?;
 
+        // Wait for context to be ready
         loop {
             match mainloop.iterate(true) {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
@@ -487,6 +502,7 @@ impl PulseAudioServer {
 
         let (init_tx, mut init_rx) = tokio::sync::mpsc::unbounded_channel();
 
+        // Create a pipe to wake the PulseAudio mainloop when commands arrive.
         let (wake_read, wake_write) = {
             let mut fds = [0i32; 2];
             if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC | libc::O_NONBLOCK) } != 0 {
@@ -516,39 +532,51 @@ impl PulseAudioServer {
                         },
                     );
 
-                    let op = server.introspector.get_server_info({
+                    match server.wait_for_response(server.introspector.get_server_info({
                         let tx = from_server_tx.clone();
                         move |info| {
                             Self::send_server_info(info, &tx);
                         }
-                    });
-                    if !Self::query(&mut server, "server info", op, &from_server_tx) {
-                        return;
-                    }
+                    })) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Failed to get server info: {e}");
+                            let _ = from_server_tx.send(PulseAudioServerEvent::Error);
+                            return;
+                        }
+                    };
 
                     let sinks = Rc::new(RefCell::new(Vec::new()));
-                    let op = server.introspector.get_sink_info_list({
+                    match server.wait_for_response(server.introspector.get_sink_info_list({
                         let tx = from_server_tx.clone();
                         let sinks = sinks.clone();
                         move |info| {
                             Self::populate_and_send_sinks(info, &tx, &mut sinks.borrow_mut());
                         }
-                    });
-                    if !Self::query(&mut server, "sink info", op, &from_server_tx) {
-                        return;
-                    }
+                    })) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Failed to get sink info: {e}");
+                            let _ = from_server_tx.send(PulseAudioServerEvent::Error);
+                            return;
+                        }
+                    };
 
                     let sources = Rc::new(RefCell::new(Vec::new()));
-                    let op = server.introspector.get_source_info_list({
+                    match server.wait_for_response(server.introspector.get_source_info_list({
                         let tx = from_server_tx.clone();
                         let sources = sources.clone();
                         move |info| {
                             Self::populate_and_send_sources(info, &tx, &mut sources.borrow_mut());
                         }
-                    });
-                    if !Self::query(&mut server, "source info", op, &from_server_tx) {
-                        return;
-                    }
+                    })) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Failed to get source info: {e}");
+                            let _ = from_server_tx.send(PulseAudioServerEvent::Error);
+                            return;
+                        }
+                    };
 
                     let introspector = server.context.introspect();
                     let error_tx = from_server_tx.clone();
@@ -674,12 +702,9 @@ impl PulseAudioServer {
         }
     }
 
-    fn wait_for_response_on<T: ?Sized>(
-        mainloop: &mut Mainloop,
-        operation: Operation<T>,
-    ) -> anyhow::Result<()> {
+    fn wait_for_response<T: ?Sized>(&mut self, operation: Operation<T>) -> anyhow::Result<()> {
         loop {
-            match mainloop.iterate(true) {
+            match self.mainloop.iterate(true) {
                 IterateResult::Quit(_) | IterateResult::Err(_) => {
                     error!("PulseAudio: iterate state was not success");
                     return Err(anyhow::anyhow!("PulseAudio: iterate state was not success"));
@@ -698,25 +723,6 @@ impl PulseAudioServer {
         }
 
         Ok(())
-    }
-
-    /// Run an introspection operation and wait for its response. On failure,
-    /// log and report `PulseAudioServerEvent::Error` on `tx`; returns false
-    /// when the caller should bail out of the startup sequence.
-    fn query<T: ?Sized>(
-        server: &mut Self,
-        what: &str,
-        operation: Operation<T>,
-        tx: &tokio::sync::mpsc::UnboundedSender<PulseAudioServerEvent>,
-    ) -> bool {
-        match Self::wait_for_response_on(&mut server.mainloop, operation) {
-            Ok(()) => true,
-            Err(e) => {
-                error!("Failed to get {what}: {e}");
-                let _ = tx.send(PulseAudioServerEvent::Error);
-                false
-            }
-        }
     }
 
     fn send_server_info(
@@ -760,7 +766,7 @@ impl PulseAudioServer {
     ) {
         match info {
             ListResult::Item(data) => {
-                trace!("Received source data: {data:?}");
+                trace!("Receved source data: {data:?}");
 
                 if data
                     .name
@@ -797,63 +803,6 @@ impl<'a> From<&'a libpulse_binding::context::introspect::ServerInfo<'a>> for Ser
     }
 }
 
-/// Field access shared by [`SinkPortInfo`] and [`SourcePortInfo`], so the
-/// available-port conversion can be written once.
-trait PortFields {
-    fn name(&self) -> Option<&str>;
-    fn description(&self) -> Option<&str>;
-    fn available(&self) -> PortAvailable;
-    fn device_type(&self) -> DevicePortType;
-}
-
-impl PortFields for SinkPortInfo<'_> {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-    fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-    fn available(&self) -> PortAvailable {
-        self.available
-    }
-    fn device_type(&self) -> DevicePortType {
-        self.r#type
-    }
-}
-
-impl PortFields for SourcePortInfo<'_> {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-    fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-    fn available(&self) -> PortAvailable {
-        self.available
-    }
-    fn device_type(&self) -> DevicePortType {
-        self.r#type
-    }
-}
-
-/// Convert available (non-disconnected) PulseAudio ports to [`Port`]s.
-/// Shared by the sink and source conversions below.
-fn available_ports(ports: &[impl PortFields]) -> Vec<Port> {
-    ports
-        .iter()
-        .filter(|port| port.available() != PortAvailable::No)
-        .map(|port| Port {
-            name: port
-                .name()
-                .map_or_else(String::default, ToString::to_string),
-            description: port
-                .description()
-                .map_or_else(String::default, ToString::to_string),
-            device_type: port.device_type(),
-        })
-        .collect()
-}
-
 impl From<&SinkInfo<'_>> for Device {
     fn from(value: &SinkInfo<'_>) -> Self {
         Self {
@@ -862,13 +811,35 @@ impl From<&SinkInfo<'_>> for Device {
                 .as_ref()
                 .map_or_else(String::default, |n| n.to_string()),
             description: value
-                .proplist
-                .get_str("device.description")
-                .map_or_else(String::default, |d| d.to_string()),
+                .description
+                .as_ref()
+                .map(|d| d.to_string())
+                .or_else(|| value.proplist.get_str("device.description"))
+                .unwrap_or_default(),
             volume: value.volume,
             is_mute: value.mute,
             is_filter: value.proplist.get_str("node.link-group").is_some(),
-            ports: available_ports(&value.ports),
+            ports: value
+                .ports
+                .iter()
+                .filter_map(|port| {
+                    if port.available != PortAvailable::No {
+                        Some(Port {
+                            name: port
+                                .name
+                                .as_ref()
+                                .map_or_else(String::default, |n| n.to_string()),
+                            description: port
+                                .description
+                                .as_ref()
+                                .map_or_else(String::default, |d| d.to_string()),
+                            device_type: port.r#type,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
         }
     }
 }
@@ -881,13 +852,35 @@ impl From<&SourceInfo<'_>> for Device {
                 .as_ref()
                 .map_or_else(String::default, |n| n.to_string()),
             description: value
-                .proplist
-                .get_str("device.description")
-                .map_or_else(String::default, |d| d.to_string()),
+                .description
+                .as_ref()
+                .map(|d| d.to_string())
+                .or_else(|| value.proplist.get_str("device.description"))
+                .unwrap_or_default(),
             volume: value.volume,
             is_mute: value.mute,
             is_filter: value.proplist.get_str("node.link-group").is_some(),
-            ports: available_ports(&value.ports),
+            ports: value
+                .ports
+                .iter()
+                .filter_map(|port| {
+                    if port.available != PortAvailable::No {
+                        Some(Port {
+                            name: port
+                                .name
+                                .as_ref()
+                                .map_or_else(String::default, |n| n.to_string()),
+                            description: port
+                                .description
+                                .as_ref()
+                                .map_or_else(String::default, |d| d.to_string()),
+                            device_type: port.r#type,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
         }
     }
 }

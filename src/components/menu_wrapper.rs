@@ -10,10 +10,7 @@ use iced::{
 };
 use std::time::Instant;
 
-use crate::components::ANIMATION_DURATION;
-
-/// Minimum distance kept between the menu and the screen edges.
-const SCREEN_EDGE_MARGIN: f32 = 8.;
+use crate::components::menu::ANIMATION_DURATION;
 
 type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
 
@@ -23,10 +20,6 @@ struct State {
     initialized: bool,
 }
 
-/// Menu popup shell drawn over the whole menu surface: horizontally centered
-/// on the trigger button (clamped to the screen edges), vertically flush
-/// with the bar, with an animated clip-reveal and an optional click-outside
-/// backdrop.
 #[allow(missing_debug_implementations)]
 pub struct MenuWrapper<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer> {
     x: f32,
@@ -143,8 +136,8 @@ where
             |node, size| {
                 let content_size = node.size();
                 let x = f32::min(
-                    f32::max(self.x - content_size.width / 2.0, SCREEN_EDGE_MARGIN),
-                    size.width - content_size.width - SCREEN_EDGE_MARGIN,
+                    f32::max(self.x - content_size.width / 2.0, 8.),
+                    size.width - content_size.width - 8.,
                 );
                 let node = node.align(
                     iced::Alignment::Center,
@@ -223,9 +216,6 @@ where
             viewport,
         );
 
-        // Redraw pump: iced has no animation timer — each delivered frame that
-        // finds the animation still running requests the next one, so it
-        // advances frame by frame until it settles.
         if let event::Event::Window(iced::core::window::Event::RedrawRequested(now)) = event {
             let state = tree.state.downcast_mut::<State>();
             if state.progress_anim.is_animating(*now) {

@@ -39,7 +39,25 @@ pub struct UiWorkspace {
     pub displayed: Displayed,
     pub windows: u16,
     pub has_urgent: bool,
+    pub is_special: bool,
     pub icons: Option<Vec<XdgIcon>>,
+}
+
+impl UiWorkspace {
+    /// Hyprland reads a negative id as a relative move, so these are focused by name.
+    fn is_named(&self) -> bool {
+        !self.is_special && self.id < 0
+    }
+
+    fn press_message(&self) -> Message {
+        if self.is_special {
+            Message::ToggleSpecialWorkspace(self.id)
+        } else if self.is_named() {
+            Message::FocusNamedWorkspace(self.id)
+        } else {
+            Message::ChangeWorkspace(self.id)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,15 +74,16 @@ fn resolve_workspace_icons(window_classes: &[String]) -> Vec<XdgIcon> {
         .map(|class| class.to_lowercase())
         .unique()
         .map(|class_lower| {
-            xdg_icons::icon_from_name(&class_lower).unwrap_or_else(xdg_icons::fallback_icon)
+            xdg_icons::get_icon_from_name(&class_lower).unwrap_or_else(xdg_icons::fallback_icon)
         })
         .collect()
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Event(Box<ServiceEvent<CompositorService>>),
+    ServiceEvent(Box<ServiceEvent<CompositorService>>),
     ChangeWorkspace(i32),
+    FocusNamedWorkspace(i32),
     ToggleSpecialWorkspace(i32),
     Scroll(i32, Option<String>),
     ConfigReloaded(WorkspacesModuleConfig),
@@ -100,7 +119,7 @@ fn calculate_ui_workspaces(
 
     let collect_icons = config.indicator_format == WorkspaceIndicatorFormat::NameAndIcons;
     let mut result: Vec<UiWorkspace> = Vec::with_capacity(workspaces.len());
-    let (special, normal): (Vec<_>, Vec<_>) = workspaces.into_iter().partition(|w| w.id < 0);
+    let (special, normal): (Vec<_>, Vec<_>) = workspaces.into_iter().partition(|w| w.is_special);
 
     // map special workspaces
     if !config.disable_special_workspaces {
@@ -125,6 +144,7 @@ fn calculate_ui_workspaces(
                 },
                 windows: w.windows,
                 has_urgent: w.has_urgent,
+                is_special: true,
                 icons: collect_icons.then(|| resolve_workspace_icons(&w.window_classes)),
             });
         }
@@ -133,8 +153,10 @@ fn calculate_ui_workspaces(
     if config.enable_virtual_desktops {
         let monitor_count = monitors.len().max(1);
         let mut virtual_desktops: HashMap<i32, VirtualDesktop> = HashMap::new();
+        // Only numbered workspaces fold into virtual desktops.
+        let (numbered, named): (Vec<_>, Vec<_>) = normal.into_iter().partition(|w| w.id > 0);
 
-        for w in normal {
+        for w in numbered {
             let vdesk_id = ((w.id - 1) / monitor_count as i32) + 1;
             let is_active = active_ids.contains(&w.id);
 
@@ -177,9 +199,32 @@ fn calculate_ui_workspaces(
                 },
                 windows: vdesk.windows,
                 has_urgent: vdesk.has_urgent,
+                is_special: false,
                 icons: collect_icons.then(|| resolve_workspace_icons(&vdesk.window_classes)),
             });
         });
+
+        for w in named {
+            let is_active = active_ids.contains(&w.id);
+            let is_visible = monitors.iter().any(|m| m.active_workspace_id == w.id);
+
+            result.push(UiWorkspace {
+                id: w.id,
+                index: w.index,
+                name: w.name,
+                monitor_id: w.monitor_id,
+                monitor: w.monitor,
+                displayed: match (is_active, is_visible) {
+                    (true, _) => Displayed::Active,
+                    (false, true) => Displayed::Visible,
+                    (false, false) => Displayed::Hidden,
+                },
+                windows: w.windows,
+                has_urgent: w.has_urgent,
+                is_special: false,
+                icons: collect_icons.then(|| resolve_workspace_icons(&w.window_classes)),
+            });
+        }
     } else {
         for w in normal {
             let display_name = if w.id > 0 {
@@ -210,6 +255,7 @@ fn calculate_ui_workspaces(
                 },
                 windows: w.windows,
                 has_urgent: w.has_urgent,
+                is_special: false,
                 icons: collect_icons.then(|| resolve_workspace_icons(&w.window_classes)),
             });
         }
@@ -254,6 +300,7 @@ fn calculate_ui_workspaces(
                 displayed: Displayed::Hidden,
                 windows: 0,
                 has_urgent: false,
+                is_special: false,
                 icons: None,
             });
         }
@@ -295,20 +342,22 @@ fn workspace_button<'a>(
         text(name).size(font_size).into()
     } else {
         let icon_size = font_size + 4.0;
-        let children =
-            std::iter::once(text(name).size(font_size).into()).chain(icons.into_iter().map(|i| {
-                match i {
-                    XdgIcon::Svg(handle) => Svg::new(handle)
-                        .height(Length::Fixed(icon_size))
-                        .width(Length::Shrink)
-                        .into(),
-                    XdgIcon::Image(handle) => Image::new(handle)
-                        .height(Length::Fixed(icon_size))
-                        .width(Length::Shrink)
-                        .into(),
-                    XdgIcon::NerdFont(si) => icon(si).size(icon_size).into(),
-                }
-            }));
+        let children: Vec<Element<'a, Message>> =
+            std::iter::once(text(name).size(font_size).into())
+                .chain(icons.into_iter().map(|i| {
+                    match i {
+                        XdgIcon::Svg(handle) => Svg::new(handle)
+                            .height(Length::Fixed(icon_size))
+                            .width(Length::Shrink)
+                            .into(),
+                        XdgIcon::Image(handle) => Image::new(handle)
+                            .height(Length::Fixed(icon_size))
+                            .width(Length::Shrink)
+                            .into(),
+                        XdgIcon::NerdFont(si) => icon(si).size(icon_size).into(),
+                    }
+                }))
+                .collect();
         Row::with_children(children)
             .spacing(theme.space.xxs)
             .align_y(alignment::Vertical::Center)
@@ -343,12 +392,19 @@ impl Workspaces {
 
     pub fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
-            Message::Event(event) => {
-                if matches!(
-                    event.apply(&mut self.service),
-                    crate::services::Applied::Init | crate::services::Applied::Updated
-                ) {
-                    self.recalculate_ui_workspaces();
+            Message::ServiceEvent(event) => {
+                match *event {
+                    ServiceEvent::Init(s) => {
+                        self.service = Some(s);
+                        self.recalculate_ui_workspaces();
+                    }
+                    ServiceEvent::Update(e) => {
+                        if let Some(s) = &mut self.service {
+                            s.update(e);
+                            self.recalculate_ui_workspaces();
+                        }
+                    }
+                    _ => {}
                 }
                 iced::Task::none()
             }
@@ -366,13 +422,29 @@ impl Workspaces {
                                     "vdesk".to_string(),
                                     id.to_string(),
                                 ))
-                                .map(|event| Message::Event(Box::new(event)));
+                                .map(|event| Message::ServiceEvent(Box::new(event)));
                         } else {
                             return service
                                 .command(CompositorCommand::FocusWorkspace(id))
-                                .map(|event| Message::Event(Box::new(event)));
+                                .map(|event| Message::ServiceEvent(Box::new(event)));
                         }
                     }
+                }
+                iced::Task::none()
+            }
+            Message::FocusNamedWorkspace(id) => {
+                let already_active = self
+                    .ui_workspaces
+                    .iter()
+                    .any(|w| w.displayed == Displayed::Active && w.id == id);
+
+                if let Some(service) = &mut self.service
+                    && !already_active
+                    && let Some(named) = service.workspaces.iter().find(|w| w.id == id)
+                {
+                    return service
+                        .command(CompositorCommand::FocusNamedWorkspace(named.name.clone()))
+                        .map(|event| Message::ServiceEvent(Box::new(event)));
                 }
                 iced::Task::none()
             }
@@ -388,80 +460,20 @@ impl Workspaces {
                                 .last()
                                 .map_or_else(|| special.name.clone(), |s| s.to_string()),
                         ))
-                        .map(|event| Message::Event(Box::new(event)));
+                        .map(|event| Message::ServiceEvent(Box::new(event)));
                 }
                 iced::Task::none()
             }
             Message::Scroll(direction, monitor) => {
                 self.scroll_accumulator = 0.;
 
-                // Start from the scrolled bar's monitor (Active, else Visible), so
-                // each bar scrolls its own monitor; fall back to the global active.
-                let pos = monitor
-                    .as_deref()
-                    .and_then(|name| {
-                        self.ui_workspaces.iter().position(|w| {
-                            !w.monitor.is_empty()
-                                && name == w.monitor.as_str()
-                                && matches!(w.displayed, Displayed::Active | Displayed::Visible)
-                        })
-                    })
-                    .or_else(|| {
-                        self.ui_workspaces
-                            .iter()
-                            .position(|w| w.displayed == Displayed::Active)
-                    });
-
-                let Some(pos) = pos else {
-                    return iced::Task::none();
-                };
-
-                let current_monitor = self.ui_workspaces[pos].monitor.clone();
-                let current_monitor_id = self.ui_workspaces[pos].monitor_id;
-
-                let restrict_to_monitor = matches!(
-                    self.config.visibility_mode,
-                    WorkspaceVisibilityMode::MonitorSpecific
-                        | WorkspaceVisibilityMode::MonitorSpecificExclusive
-                );
-
-                let in_current_group = |w: &&UiWorkspace| -> bool {
-                    if !restrict_to_monitor {
-                        return true;
+                match self.scroll_target(direction, monitor.as_deref()) {
+                    Some(next) => {
+                        let message = next.press_message();
+                        self.update(message)
                     }
-
-                    if let Some(w_monitor_id) = w.monitor_id
-                        && let Some(active_monitor_id) = current_monitor_id
-                    {
-                        return w_monitor_id == active_monitor_id;
-                    }
-
-                    if !w.monitor.is_empty() && !current_monitor.is_empty() {
-                        return w.monitor == current_monitor;
-                    }
-
-                    // monitor doesn't seem to contain any useful info, so assume it's part of the group
-                    true
-                };
-
-                // Navigate by position in the already-sorted ui_workspaces
-                // vector, which represents exact visual order regardless of
-                // group_by_monitor or visibility_mode configuration.
-                let next_workspace = if direction > 0 {
-                    self.ui_workspaces[..pos]
-                        .iter()
-                        .rev()
-                        .find(|w| in_current_group(w))
-                } else {
-                    self.ui_workspaces[pos + 1..]
-                        .iter()
-                        .find(|w| in_current_group(w))
-                };
-
-                if let Some(next) = next_workspace {
-                    return self.update(Message::ChangeWorkspace(next.id));
+                    None => iced::Task::none(),
                 }
-                iced::Task::none()
             }
             Message::ConfigReloaded(cfg) => {
                 let icons_enabled = cfg.indicator_format == WorkspaceIndicatorFormat::NameAndIcons;
@@ -494,6 +506,78 @@ impl Workspaces {
         }
     }
 
+    fn scroll_target(&self, direction: i32, monitor: Option<&str>) -> Option<&UiWorkspace> {
+        // Start from the scrolled bar's monitor (Active, else Visible), so
+        // each bar scrolls its own monitor; fall back to the global active.
+        //
+        // Special workspaces are skipped throughout: an open one is Active
+        // and sorts to the front of `ui_workspaces`, so it would win this
+        // search and anchor navigation on itself instead of the focused
+        // workspace.
+        let pos = monitor
+            .and_then(|name| {
+                self.ui_workspaces.iter().position(|w| {
+                    !w.is_special
+                        && !w.monitor.is_empty()
+                        && name == w.monitor.as_str()
+                        && matches!(w.displayed, Displayed::Active | Displayed::Visible)
+                })
+            })
+            .or_else(|| {
+                self.ui_workspaces
+                    .iter()
+                    .position(|w| !w.is_special && w.displayed == Displayed::Active)
+            })?;
+
+        let current_monitor = self.ui_workspaces[pos].monitor.clone();
+        let current_monitor_id = self.ui_workspaces[pos].monitor_id;
+
+        let restrict_to_monitor = matches!(
+            self.config.visibility_mode,
+            WorkspaceVisibilityMode::MonitorSpecific
+                | WorkspaceVisibilityMode::MonitorSpecificExclusive
+        );
+
+        let in_current_group = |w: &&UiWorkspace| -> bool {
+            // Special workspaces are toggled, not focused, so scrolling
+            // must never land on one and dispatch `ChangeWorkspace`.
+            if w.is_special {
+                return false;
+            }
+
+            if !restrict_to_monitor {
+                return true;
+            }
+
+            if let Some(w_monitor_id) = w.monitor_id
+                && let Some(active_monitor_id) = current_monitor_id
+            {
+                return w_monitor_id == active_monitor_id;
+            }
+
+            if !w.monitor.is_empty() && !current_monitor.is_empty() {
+                return w.monitor == current_monitor;
+            }
+
+            // monitor doesn't seem to contain any useful info, so assume it's part of the group
+            true
+        };
+
+        // Navigate by position in the already-sorted ui_workspaces
+        // vector, which represents exact visual order regardless of
+        // group_by_monitor or visibility_mode configuration.
+        if direction > 0 {
+            self.ui_workspaces[..pos]
+                .iter()
+                .rev()
+                .find(|w| in_current_group(w))
+        } else {
+            self.ui_workspaces[pos + 1..]
+                .iter()
+                .find(|w| in_current_group(w))
+        }
+    }
+
     fn recalculate_ui_workspaces(&mut self) {
         if let Some(service) = &self.service {
             self.ui_workspaces = calculate_ui_workspaces(&self.config, service);
@@ -501,7 +585,7 @@ impl Workspaces {
     }
 
     pub fn view<'a>(&'a self, id: SurfaceId, outputs: &Outputs) -> Element<'a, Message> {
-        let monitor_name = outputs.monitor_name(id);
+        let monitor_name = outputs.get_monitor_name(id);
 
         let row = use_theme(|theme| {
             Row::with_children(
@@ -538,7 +622,7 @@ impl Workspaces {
                             };
 
                             let color = color_index.map(|i| {
-                                let colors = if w.id < 0 {
+                                let colors = if w.is_special {
                                     theme
                                         .special_workspace_colors
                                         .as_ref()
@@ -553,11 +637,7 @@ impl Workspaces {
                                 let name = w.name.clone();
                                 let icons = w.icons.clone().unwrap_or_default();
                                 let has_icons = !icons.is_empty();
-                                let on_press = if w.id > 0 {
-                                    Message::ChangeWorkspace(w.id)
-                                } else {
-                                    Message::ToggleSpecialWorkspace(w.id)
-                                };
+                                let on_press = w.press_message();
                                 let font_size = theme.font_size.xs;
                                 let height = theme.space.md;
 
@@ -568,85 +648,107 @@ impl Workspaces {
                                     && !w.name.is_empty()
                                     && w.name.chars().all(|c| c.is_ascii_digit());
 
-                                // (animated scalar, is fixed-width): the two
-                                // branches below differ only in what animates.
-                                let (target, fixed_width) =
-                                    if numbered {
-                                        (
-                                            match (&w.displayed, urgent) {
-                                                (Displayed::Active, _) => theme.space.xl,
-                                                (Displayed::Visible, _)
-                                                | (Displayed::Hidden, true) => theme.space.lg,
-                                                (Displayed::Hidden, false) => theme.space.md,
-                                            },
-                                            true,
-                                        )
-                                    } else {
-                                        (
-                                            match (&w.displayed, urgent) {
-                                                (Displayed::Active, _) => theme.space.md,
-                                                (Displayed::Visible, _)
-                                                | (Displayed::Hidden, true) => theme.space.sm,
-                                                (Displayed::Hidden, false) => theme.space.xs,
-                                            },
-                                            false,
-                                        )
+                                Some(if numbered {
+                                    let target_width = match (&w.displayed, urgent) {
+                                        (Displayed::Active, _) => theme.space.xl,
+                                        (Displayed::Visible, _) | (Displayed::Hidden, true) => {
+                                            theme.space.lg
+                                        }
+                                        (Displayed::Hidden, false) => theme.space.md,
                                     };
 
-                                if theme.animations_enabled {
-                                    let build = move |value: f32| {
-                                        // Clone per invocation: the builder may
-                                        // call `build` repeatedly and the inner
-                                        // `move` closure captures fresh data.
-                                        let (name, icons, on_press) =
-                                            (name.clone(), icons.clone(), on_press.clone());
-                                        use_theme(move |theme| {
-                                            workspace_button(
-                                                theme,
-                                                name,
-                                                icons,
-                                                font_size,
-                                                empty,
-                                                urgent,
-                                                active,
-                                                color,
-                                                if fixed_width {
-                                                    Length::Fixed(value)
-                                                } else {
-                                                    Length::Shrink
-                                                },
-                                                if fixed_width { 0.0 } else { value },
-                                                height,
-                                                on_press,
-                                            )
+                                    if theme.animations_enabled {
+                                        AnimationBuilder::new(target_width, move |width| {
+                                            let name = name.clone();
+                                            let icons = icons.clone();
+                                            let on_press = on_press.clone();
+                                            use_theme(move |theme| {
+                                                workspace_button(
+                                                    theme,
+                                                    name.clone(),
+                                                    icons.clone(),
+                                                    font_size,
+                                                    empty,
+                                                    urgent,
+                                                    active,
+                                                    color,
+                                                    Length::Fixed(width),
+                                                    0.0,
+                                                    height,
+                                                    on_press.clone(),
+                                                )
+                                            })
                                         })
-                                    };
-                                    Some(
-                                        AnimationBuilder::new(target, build)
-                                            .animates_layout(true)
-                                            .animation(Easing::EASE.very_quick())
-                                            .into(),
-                                    )
+                                        .animates_layout(true)
+                                        .animation(Easing::EASE.very_quick())
+                                        .into()
+                                    } else {
+                                        workspace_button(
+                                            theme,
+                                            name,
+                                            icons,
+                                            font_size,
+                                            empty,
+                                            urgent,
+                                            active,
+                                            color,
+                                            Length::Fixed(target_width),
+                                            0.0,
+                                            height,
+                                            on_press,
+                                        )
+                                    }
                                 } else {
-                                    Some(workspace_button(
-                                        theme,
-                                        name.clone(),
-                                        icons.clone(),
-                                        font_size,
-                                        empty,
-                                        urgent,
-                                        active,
-                                        color,
-                                        if fixed_width {
-                                            Length::Fixed(target)
-                                        } else {
-                                            Length::Shrink
-                                        },
-                                        if fixed_width { 0.0 } else { target },
-                                        height,
-                                        on_press,
-                                    ))
-                                }
+                                    let target_padding = match (&w.displayed, urgent) {
+                                        (Displayed::Active, _) => theme.space.md,
+                                        (Displayed::Visible, _) | (Displayed::Hidden, true) => {
+                                            theme.space.sm
+                                        }
+                                        (Displayed::Hidden, false) => theme.space.xs,
+                                    };
+
+                                    if theme.animations_enabled {
+                                        AnimationBuilder::new(target_padding, move |padding| {
+                                            let name = name.clone();
+                                            let icons = icons.clone();
+                                            let on_press = on_press.clone();
+                                            use_theme(move |theme| {
+                                                workspace_button(
+                                                    theme,
+                                                    name.clone(),
+                                                    icons.clone(),
+                                                    font_size,
+                                                    empty,
+                                                    urgent,
+                                                    active,
+                                                    color,
+                                                    Length::Shrink,
+                                                    padding,
+                                                    height,
+                                                    on_press.clone(),
+                                                )
+                                            })
+                                        })
+                                        .animates_layout(true)
+                                        .animation(Easing::EASE.very_quick())
+                                        .into()
+                                    } else {
+                                        workspace_button(
+                                            theme,
+                                            name,
+                                            icons,
+                                            font_size,
+                                            empty,
+                                            urgent,
+                                            active,
+                                            color,
+                                            Length::Shrink,
+                                            target_padding,
+                                            height,
+                                            on_press,
+                                        )
+                                    }
+                                })
                             }
                         } else {
                             None
@@ -662,33 +764,47 @@ impl Workspaces {
         MouseArea::new(row)
             .on_scroll(move |direction| {
                 let scroll = |dir: i32| Message::Scroll(dir, scroll_monitor.clone());
-                // Resolve the inverted direction for a scroll unit: `up`
-                // selects the direction, `is_trackpad` picks which config
-                // entries invert it.
-                let scrolled = |up: bool, is_trackpad: bool| {
-                    let inverted = match self.config.invert_scroll_direction {
-                        Some(InvertScrollDirection::All) => true,
-                        Some(InvertScrollDirection::Mouse) if !is_trackpad => true,
-                        Some(InvertScrollDirection::Trackpad) if is_trackpad => true,
-                        _ => false,
-                    };
-                    scroll(if inverted == up { 1 } else { -1 })
-                };
                 match direction {
                     iced::mouse::ScrollDelta::Lines { y, .. } => {
-                        scrolled(y.is_sign_positive(), false)
+                        if y.is_sign_positive() {
+                            match self.config.invert_scroll_direction {
+                                Some(InvertScrollDirection::All | InvertScrollDirection::Mouse) => {
+                                    scroll(-1)
+                                }
+                                Some(InvertScrollDirection::Trackpad) => scroll(1),
+                                None => scroll(1),
+                            }
+                        } else {
+                            match self.config.invert_scroll_direction {
+                                Some(InvertScrollDirection::All | InvertScrollDirection::Mouse) => {
+                                    scroll(1)
+                                }
+                                Some(InvertScrollDirection::Trackpad) => scroll(-1),
+                                None => scroll(-1),
+                            }
+                        }
                     }
                     iced::mouse::ScrollDelta::Pixels { y, .. } => {
-                        // Trackpad pixel deltas are tiny and arrive in bursts;
-                        // accumulate until they cross the threshold, then step
-                        // once. `Message::Scroll` (handled above) resets the
-                        // accumulator.
                         let sensibility = 3.;
 
                         if self.scroll_accumulator.abs() < sensibility {
                             Message::ScrollAccumulator(y)
+                        } else if self.scroll_accumulator.is_sign_positive() {
+                            match self.config.invert_scroll_direction {
+                                Some(
+                                    InvertScrollDirection::All | InvertScrollDirection::Trackpad,
+                                ) => scroll(-1),
+                                Some(InvertScrollDirection::Mouse) => scroll(1),
+                                None => scroll(1),
+                            }
                         } else {
-                            scrolled(self.scroll_accumulator.is_sign_positive(), true)
+                            match self.config.invert_scroll_direction {
+                                Some(
+                                    InvertScrollDirection::All | InvertScrollDirection::Trackpad,
+                                ) => scroll(1),
+                                Some(InvertScrollDirection::Mouse) => scroll(-1),
+                                None => scroll(-1),
+                            }
                         }
                     }
                 }
@@ -697,6 +813,6 @@ impl Workspaces {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        CompositorService::subscribe().map(|event| Message::Event(Box::new(event)))
+        CompositorService::subscribe().map(|event| Message::ServiceEvent(Box::new(event)))
     }
 }

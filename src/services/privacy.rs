@@ -1,18 +1,18 @@
-use super::impl_service_subscription;
 use super::{ReadOnlyService, ServiceEvent};
-use iced::futures::{
-    FutureExt, SinkExt, Stream, StreamExt, channel::mpsc::Sender, select, stream::pending,
+use iced::{
+    Subscription,
+    futures::{
+        FutureExt, SinkExt, Stream, StreamExt, channel::mpsc::Sender, select, stream::pending,
+    },
+    stream::channel,
 };
 use inotify::{EventMask, Inotify, WatchMask};
 use log::{debug, error, info, warn};
 use pipewire::{context::ContextBox, main_loop::MainLoopBox};
 use std::{
-    cell::RefCell, collections::HashSet, fs, ops::Deref, path::Path, rc::Rc, thread, time::Duration,
+    any::TypeId, cell::RefCell, collections::HashSet, fs, ops::Deref, path::Path, rc::Rc, thread,
 };
-use tokio::{
-    sync::mpsc::{UnboundedReceiver, unbounded_channel},
-    time::sleep,
-};
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 const WEBCAM_DEVICE_PATH: &str = "/dev/video0";
 
@@ -106,6 +106,8 @@ impl PrivacyService {
                             && let Some(media) = props.get("media.class").filter(|v| {
                                 v == &"Stream/Input/Video" || v == &"Stream/Input/Audio"
                             })
+                            // ashell's own visualizer captures the sink monitor, not a mic
+                            && props.get("node.name") != Some("cava")
                         {
                             debug!("New global: {global:?}");
                             tracked_ids.borrow_mut().insert(global.id);
@@ -131,7 +133,7 @@ impl PrivacyService {
                 })
                 .register();
 
-            let _ = boot_tx.send(Ok(()));
+            boot_tx.send(Ok(())).unwrap();
             mainloop.run();
 
             warn!("Pipewire mainloop exited");
@@ -242,11 +244,10 @@ impl PrivacyService {
                 State::Active((pipewire, webcam))
             }
             State::Error => {
-                error!("Privacy service error, retrying in 5 seconds");
+                error!("Privacy service error");
 
-                sleep(Duration::from_secs(5)).await;
-
-                State::Init
+                let _ = pending::<u8>().next().await;
+                State::Error
             }
         }
     }
@@ -294,7 +295,17 @@ impl ReadOnlyService for PrivacyService {
         }
     }
 
-    impl_service_subscription!(PrivacyService, 100);
+    fn subscribe() -> Subscription<ServiceEvent<Self>> {
+        Subscription::run_with(TypeId::of::<Self>(), |_| {
+            channel(100, async |mut output| {
+                let mut state = State::Init;
+
+                loop {
+                    state = PrivacyService::start_listening(state, &mut output).await;
+                }
+            })
+        })
+    }
 }
 
 fn is_device_in_use(target: &str) -> i32 {
@@ -303,11 +314,12 @@ fn is_device_in_use(target: &str) -> i32 {
         for entry in entries.flatten() {
             let pid_path = entry.path();
 
-            // Skip /proc entries without an fd table (irq, sys, ... — not processes)
+            // Skip non-numeric directories (not process folders)
             if !pid_path.join("fd").exists() {
                 continue;
             }
 
+            // Check file descriptors in each process folder
             if let Ok(fd_entries) = fs::read_dir(pid_path.join("fd")) {
                 for fd_entry in fd_entries.flatten() {
                     if let Ok(link_path) = fs::read_link(fd_entry.path())

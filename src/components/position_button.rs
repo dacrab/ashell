@@ -1,7 +1,7 @@
 use iced::{
     Background, Color, Length, Padding, Point, Rectangle, Size, Vector,
     core::{
-        Clipboard, Layout, Shell, Widget, event, layout, mouse, overlay, renderer, touch,
+        Clipboard, Layout, Shell, Widget, event, keyboard, layout, mouse, overlay, renderer, touch,
         widget::{Operation, Tree, tree},
     },
     widget::button::{Catalog, Status, Style, StyleFn},
@@ -15,22 +15,12 @@ pub struct ButtonUIRef {
     pub viewport: (f32, f32),
 }
 
-impl ButtonUIRef {
-    /// Builds a reference from a widget layout: the widget's center point and
-    /// the enclosing viewport size, used to position popup menus.
-    fn from_layout(layout: Layout<'_>, viewport: &Rectangle) -> Self {
-        let bounds = layout.bounds();
-        Self {
-            position: Point::new(
-                bounds.width / 2. + layout.position().x,
-                bounds.height / 2. + layout.position().y,
-            ),
-            viewport: (viewport.width, viewport.height),
-        }
-    }
+enum OnPress<'a, Message> {
+    Message(Message),
+    MessageWithPosition(Box<dyn Fn(ButtonUIRef) -> Message + 'a>),
 }
 
-enum OnPress<'a, Message> {
+enum OnHover<'a, Message> {
     Message(Message),
     MessageWithPosition(Box<dyn Fn(ButtonUIRef) -> Message + 'a>),
 }
@@ -46,11 +36,12 @@ where
     on_middle_press: Option<OnPress<'a, Message>>,
     on_scroll_up: Option<OnPress<'a, Message>>,
     on_scroll_down: Option<OnPress<'a, Message>>,
-    on_hover: Option<Box<dyn Fn(ButtonUIRef) -> Message + 'a>>,
+    on_hover: Option<OnHover<'a, Message>>,
     on_unhover: Option<Message>,
     width: Length,
     height: Length,
     padding: Padding,
+    clip: bool,
     class: Theme::Class<'a>,
 }
 
@@ -75,6 +66,7 @@ where
             width: size.width.fluid(),
             height: size.height.fluid(),
             padding: DEFAULT_PADDING,
+            clip: false,
             class: Theme::default(),
         }
     }
@@ -131,6 +123,14 @@ where
         self
     }
 
+    pub fn on_middle_press_with_position(
+        mut self,
+        on_middle_press: impl Fn(ButtonUIRef) -> Message + 'a,
+    ) -> Self {
+        self.on_middle_press = Some(OnPress::MessageWithPosition(Box::new(on_middle_press)));
+        self
+    }
+
     pub fn on_scroll_up(mut self, on_scroll_up: Message) -> Self {
         self.on_scroll_up = Some(OnPress::Message(on_scroll_up));
         self
@@ -141,16 +141,28 @@ where
         self
     }
 
+    pub fn on_hover(mut self, on_hover: Message) -> Self {
+        self.on_hover = Some(OnHover::Message(on_hover));
+        self
+    }
+
     pub fn on_hover_with_position(
         mut self,
         on_hover: impl Fn(ButtonUIRef) -> Message + 'a,
     ) -> Self {
-        self.on_hover = Some(Box::new(on_hover));
+        self.on_hover = Some(OnHover::MessageWithPosition(Box::new(on_hover)));
         self
     }
 
     pub fn on_unhover(mut self, on_unhover: Message) -> Self {
         self.on_unhover = Some(on_unhover);
+        self
+    }
+
+    /// Sets whether the contents of the [`Button`] should be clipped on
+    /// overflow.
+    pub fn clip(mut self, clip: bool) -> Self {
+        self.clip = clip;
         self
     }
 
@@ -178,7 +190,13 @@ where
                 shell.publish(message.clone());
             }
             OnPress::MessageWithPosition(on_press_with_position) => {
-                let ui_data = ButtonUIRef::from_layout(layout, viewport);
+                let ui_data = ButtonUIRef {
+                    position: Point::new(
+                        layout.bounds().width / 2. + layout.position().x,
+                        layout.bounds().height / 2. + layout.position().y,
+                    ),
+                    viewport: (viewport.width, viewport.height),
+                };
                 shell.publish(on_press_with_position(ui_data));
             }
         }
@@ -186,15 +204,28 @@ where
 
     fn publish_on_hover(
         &self,
-        on_hover: &(dyn Fn(ButtonUIRef) -> Message + 'a),
+        on_hover: &OnHover<'a, Message>,
         layout: Layout<'_>,
         viewport: &Rectangle,
         shell: &mut Shell<'_, Message>,
     ) where
         Message: Clone,
     {
-        let ui_data = ButtonUIRef::from_layout(layout, viewport);
-        shell.publish(on_hover(ui_data));
+        match on_hover {
+            OnHover::Message(message) => {
+                shell.publish(message.clone());
+            }
+            OnHover::MessageWithPosition(on_hover_with_position) => {
+                let ui_data = ButtonUIRef {
+                    position: Point::new(
+                        layout.bounds().width / 2. + layout.position().x,
+                        layout.bounds().height / 2. + layout.position().y,
+                    ),
+                    viewport: (viewport.width, viewport.height),
+                };
+                shell.publish(on_hover_with_position(ui_data));
+            }
+        }
     }
 }
 
@@ -204,6 +235,7 @@ struct State {
     is_pressed: bool,
     is_right_pressed: bool,
     is_middle_pressed: bool,
+    is_focused: bool,
 }
 
 impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -412,6 +444,33 @@ where
                     }
                 }
             }
+            event::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => {
+                if let Some(on_press) = self.on_press.as_ref() {
+                    let state = tree.state.downcast_mut::<State>();
+                    if state.is_focused
+                        && matches!(key, keyboard::Key::Named(keyboard::key::Named::Enter))
+                    {
+                        state.is_pressed = true;
+                        match on_press {
+                            OnPress::Message(message) => {
+                                shell.publish(message.clone());
+                            }
+                            OnPress::MessageWithPosition(on_press) => {
+                                let ui_data = ButtonUIRef {
+                                    position: Point::new(
+                                        layout.bounds().width / 2. + layout.position().x,
+                                        layout.bounds().height / 2. + layout.position().y,
+                                    ),
+                                    viewport: (viewport.width, viewport.height),
+                                };
+                                shell.publish(on_press(ui_data));
+                            }
+                        }
+                        shell.capture_event();
+                        return;
+                    }
+                }
+            }
             event::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let bounds = layout.bounds();
                 let is_over = cursor.is_over(bounds);
@@ -497,7 +556,11 @@ where
             );
         }
 
-        let viewport = bounds.intersection(viewport).unwrap_or(*viewport);
+        let viewport = if self.clip {
+            bounds.intersection(viewport).unwrap_or(*viewport)
+        } else {
+            *viewport
+        };
 
         self.content.as_widget().draw(
             &tree.children[0],
@@ -571,7 +634,7 @@ where
 }
 
 /// The default [`Padding`] of a [`Button`].
-const DEFAULT_PADDING: Padding = Padding {
+pub(crate) const DEFAULT_PADDING: Padding = Padding {
     top: 5.0,
     bottom: 5.0,
     right: 10.0,

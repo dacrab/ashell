@@ -1,5 +1,5 @@
 use crate::{
-    components::button::{ButtonHierarchy, ButtonKind, ButtonSize},
+    components::button::{ButtonHierarchy, ButtonKind, ButtonSize, OnPress},
     theme::use_theme,
 };
 use iced::{
@@ -18,6 +18,7 @@ pub trait Icon {
 }
 
 #[derive(Debug, Copy, Clone, Default)]
+#[allow(dead_code)]
 pub enum StaticIcon {
     #[default]
     None,
@@ -34,6 +35,7 @@ pub enum StaticIcon {
     Speaker2,
     Speaker3,
     SpeakerOverdrive,
+    Headphones0,
     Headphones1,
     Headset,
     Mic0,
@@ -57,6 +59,8 @@ pub enum StaticIcon {
     Battery4,
     BatteryCharging,
     BatteryLimit,
+    BatteryHealth,
+    BatteryCycles,
     BatteryLimitQuickSetting,
     Wifi0,
     Wifi1,
@@ -97,6 +101,7 @@ pub enum StaticIcon {
     Pause,
     SkipNext,
     MusicNote,
+    OpenWindow,
     Drive,
     IpAddress,
     DownloadSpeed,
@@ -111,6 +116,8 @@ pub enum StaticIcon {
     KeyboardBatteryLow,
     KeyboardBatteryAlert,
     KeyboardBatteryCharging,
+    KeyboardBacklightOn,
+    KeyboardBacklightOff,
     MouseBatteryFull,
     MouseBatteryMedium,
     MouseBatteryLow,
@@ -129,7 +136,9 @@ pub enum StaticIcon {
     Remove,
     Bell,
     BellBadge,
+    BellOff,
     Delete,
+    QrCode,
 }
 
 impl StaticIcon {
@@ -149,6 +158,7 @@ impl StaticIcon {
             StaticIcon::Speaker2 => "\u{f0580}",
             StaticIcon::Speaker3 => "\u{f057e}",
             StaticIcon::SpeakerOverdrive => "\u{f075d}",
+            StaticIcon::Headphones0 => "\u{f07ce}",
             StaticIcon::Headphones1 => "\u{f02cb}",
             StaticIcon::Headset => "\u{f02ce}",
             StaticIcon::Mic0 => "\u{f036d}",
@@ -172,6 +182,8 @@ impl StaticIcon {
             StaticIcon::Battery4 => "\u{f0079}",
             StaticIcon::BatteryCharging => "\u{f0084}",
             StaticIcon::BatteryLimit => "\u{f1211}",
+            StaticIcon::BatteryHealth => "\u{f05f6}",
+            StaticIcon::BatteryCycles => "\u{f1834}",
             StaticIcon::BatteryLimitQuickSetting => "\u{f120f}",
             StaticIcon::Wifi0 => "\u{f092d}",
             StaticIcon::Wifi1 => "\u{f092f}",
@@ -212,6 +224,7 @@ impl StaticIcon {
             StaticIcon::Pause => "\u{f03e4}",
             StaticIcon::SkipNext => "\u{f04ad}",
             StaticIcon::MusicNote => "\u{f0387}",
+            StaticIcon::OpenWindow => "\u{f0496}",
             StaticIcon::Drive => "\u{f02ca}",
             StaticIcon::IpAddress => "\u{f0a60}",
             StaticIcon::DownloadSpeed => "\u{f06f4}",
@@ -236,6 +249,8 @@ impl StaticIcon {
             StaticIcon::HeadphoneBatteryLow => "\u{c000c}",
             StaticIcon::HeadphoneBatteryAlert => "\u{c000d}",
             StaticIcon::HeadphoneBatteryCharging => "\u{c000e}",
+            StaticIcon::KeyboardBacklightOn => "\u{c000f}",
+            StaticIcon::KeyboardBacklightOff => "\u{c0010}",
             StaticIcon::GamepadBatteryFull => "\u{f074d}",
             StaticIcon::GamepadBatteryMedium => "\u{f074f}",
             StaticIcon::GamepadBatteryLow => "\u{f074e}",
@@ -244,11 +259,13 @@ impl StaticIcon {
             StaticIcon::Remove => "\u{f0377}",
             StaticIcon::Bell => "\u{eaa2}",
             StaticIcon::BellBadge => "\u{eb9a}",
+            StaticIcon::BellOff => "\u{ec08}",
             StaticIcon::Delete => "\u{f01b4}",
+            StaticIcon::QrCode => "\u{f0432}",
         }
     }
 
-    fn is_custom_battery_icon(&self) -> bool {
+    fn is_custom_icon(&self) -> bool {
         matches!(
             self,
             StaticIcon::KeyboardBatteryFull
@@ -266,11 +283,13 @@ impl StaticIcon {
                 | StaticIcon::HeadphoneBatteryLow
                 | StaticIcon::HeadphoneBatteryAlert
                 | StaticIcon::HeadphoneBatteryCharging
+                | StaticIcon::KeyboardBacklightOn
+                | StaticIcon::KeyboardBacklightOff
         )
     }
 
     fn get_font(&self) -> &'static str {
-        if self.is_custom_battery_icon() {
+        if self.is_custom_icon() {
             "Ashell Custom Icon"
         } else {
             "Symbols Nerd Font"
@@ -278,7 +297,7 @@ impl StaticIcon {
     }
 
     fn get_font_mono(&self) -> &'static str {
-        if self.is_custom_battery_icon() {
+        if self.is_custom_icon() {
             "Ashell Custom Icon"
         } else {
             "Symbols Nerd Font Mono"
@@ -347,6 +366,7 @@ impl IconKind {
 
 impl Icon for IconKind {
     fn to_text<'a>(self) -> Text<'a> {
+        // Call the inherent method via explicit disambiguation
         match self {
             IconKind::Static(s) => s.to_text(),
             IconKind::Dynamic(s) => DynamicIcon(s).to_text(),
@@ -373,7 +393,7 @@ pub type StyleFn<'a, Theme> = Box<dyn for<'b> Fn(&'b Theme, Status) -> Style + '
 
 pub struct IconButton<'a, I: Icon, Message> {
     icon: I,
-    on_press: Option<Message>,
+    on_press: Option<OnPress<'a, Message>>,
     kind: ButtonKind,
     hierarchy: ButtonHierarchy,
     style_override: Option<StyleFn<'a, Theme>>,
@@ -383,7 +403,17 @@ pub struct IconButton<'a, I: Icon, Message> {
 
 impl<'a, I: Icon, Message> IconButton<'a, I, Message> {
     pub fn on_press(mut self, on_press: Message) -> Self {
-        self.on_press = Some(on_press);
+        self.on_press = Some(OnPress::Direct(on_press));
+        self
+    }
+
+    pub fn on_press_with(mut self, on_press: impl Fn() -> Message + 'a) -> Self {
+        self.on_press = Some(OnPress::Closure(Box::new(on_press)));
+        self
+    }
+
+    pub fn on_press_maybe(mut self, on_press: Option<Message>) -> Self {
+        self.on_press = on_press.map(OnPress::Direct);
         self
     }
 
@@ -460,7 +490,8 @@ impl<'a, I: Icon, Message: 'static + Clone> From<IconButton<'a, I, Message>>
         .style(style);
 
         let btn = match value.on_press {
-            Some(message) => btn.on_press(message),
+            Some(OnPress::Direct(message)) => btn.on_press(message),
+            Some(OnPress::Closure(closure)) => btn.on_press_with(closure),
             None => btn,
         };
 

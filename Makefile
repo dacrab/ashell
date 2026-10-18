@@ -28,4 +28,6 @@ fmt:
 
 check:
 	cargo fmt --all -- --check
-	cargo clippy --all-features -- -D warnings
+	cargo check --workspace
+	cargo clippy --workspace --all-features -- -D warnings
+	cargo test -p ashell-services --all-features

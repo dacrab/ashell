@@ -2,9 +2,10 @@ use crate::{
     components::divider,
     components::icons::{StaticIcon, icon, icon_button},
     components::scrollable,
-    components::{ButtonSize, MenuSize, menu::MAX_MENU_HEIGHT},
+    components::{ButtonKind, ButtonSize, MenuSize},
     config::{
-        MediaPlayerFormat, MediaPlayerModuleConfig, MediaPlayerTextField, MediaPlayerVisualizer,
+        MediaPlayerFormat, MediaPlayerIndicatorControls, MediaPlayerModuleConfig,
+        MediaPlayerTextField, MediaPlayerVisualizer,
     },
     services::{
         ReadOnlyService, Service, ServiceEvent,
@@ -15,7 +16,11 @@ use crate::{
     },
     t,
     theme::use_theme,
-    utils::truncate_text,
+    utils::{
+        remote_value::{self, Remote},
+        truncate_text,
+    },
+    xdg,
 };
 use iced::{
     Color, Element, Length, Subscription, Task,
@@ -29,7 +34,10 @@ use iced::{
         column, container, image, row, slider, space, text,
     },
 };
-use std::any::TypeId;
+use std::{any::TypeId, collections::HashMap};
+
+/// Percentage points the scroll wheel moves the active player's volume per tick.
+const VOLUME_SCROLL_STEP: f64 = 5.0;
 
 const VISUALIZER_BAR_COUNT: usize = 32;
 
@@ -149,7 +157,14 @@ pub enum Message {
     Prev(String),
     PlayPause(String),
     Next(String),
-    SetVolume(String, f64),
+    Volume(String, remote_value::Message<f64>),
+    /// Focus the player's window and close the menu.
+    Raise(String),
+    ActivePrev,
+    ActivePlayPause,
+    ActiveNext,
+    ActiveVolumeUp,
+    ActiveVolumeDown,
     Event(ServiceEvent<MprisPlayerService>),
     ConfigReloaded(MediaPlayerModuleConfig),
     Bars(Vec<f32>),
@@ -159,12 +174,19 @@ pub enum Message {
 pub enum Action {
     None,
     Command(Task<Message>),
+    CommandAndCloseMenu(Task<Message>),
 }
 
 pub struct MediaPlayer {
     config: MediaPlayerModuleConfig,
     service: Option<MprisPlayerService>,
     bars: Vec<f32>,
+    last_active: Option<String>,
+    /// Per-player volume, keyed by MPRIS service name. Volume changes only come
+    /// back over D-Bus, so a burst of scroll events would otherwise all compute
+    /// from the same stale value; [`Remote`] applies each step optimistically and
+    /// falls back to the received value once the interaction stops.
+    volumes: HashMap<String, Remote<f64>>,
 }
 
 impl MediaPlayer {
@@ -173,22 +195,75 @@ impl MediaPlayer {
             config,
             service: None,
             bars: Vec::new(),
+            last_active: None,
+            volumes: HashMap::new(),
         }
     }
 
     /// The player to represent in the bar: the one currently playing, or the
-    /// first known player when nothing is playing.
+    /// last one that was playing, or the first known player when nothing is
+    /// playing.
     fn active_player(&self) -> Option<&MprisPlayerData> {
         let players = self.service.as_ref()?.players();
         players
             .iter()
             .find(|p| p.state == PlaybackStatus::Playing)
+            .or_else(|| {
+                players
+                    .iter()
+                    .find(|p| Some(p.service.as_str()) == self.last_active.as_deref())
+            })
             .or_else(|| players.first())
     }
 
     fn is_playing(&self) -> bool {
-        self.active_player()
-            .is_some_and(|p| p.state == PlaybackStatus::Playing)
+        self.active_player().map(|p| p.state) == Some(PlaybackStatus::Playing)
+    }
+
+    pub fn indicator_controls(&self) -> MediaPlayerIndicatorControls {
+        self.config.indicator_controls
+    }
+
+    /// Mirror the volumes reported over D-Bus into the optimistic cache and drop
+    /// entries for players that went away.
+    fn sync_volumes(&mut self) {
+        let Some(service) = self.service.as_ref() else {
+            self.volumes.clear();
+            return;
+        };
+        let players = service.players();
+        self.volumes.retain(|name, _| {
+            players
+                .iter()
+                .any(|p| &p.service == name && p.volume.is_some())
+        });
+        for player in players {
+            if let Some(volume) = player.volume {
+                match self.volumes.get_mut(&player.service) {
+                    Some(remote) => remote.receive(volume),
+                    None => {
+                        self.volumes
+                            .insert(player.service.clone(), Remote::new(volume));
+                    }
+                }
+            }
+        }
+    }
+
+    /// The volume to display and to compute the next step from: the optimistic
+    /// one while the user is interacting, the received one otherwise.
+    fn volume_of(&self, service_name: &str) -> Option<f64> {
+        self.volumes.get(service_name).map(Remote::value)
+    }
+
+    fn refresh_last_active(&mut self) {
+        if let Some(playing) = self.service.as_ref().and_then(|s| {
+            s.players()
+                .iter()
+                .find(|p| p.state == PlaybackStatus::Playing)
+        }) {
+            self.last_active = Some(playing.service.clone());
+        }
     }
 
     /// `menu_visualizer` only draws inside the menu, so it must not keep cava
@@ -204,17 +279,49 @@ impl MediaPlayer {
                 Action::Command(self.handle_command(s, PlayerCommand::PlayPause))
             }
             Message::Next(s) => Action::Command(self.handle_command(s, PlayerCommand::Next)),
-            Message::SetVolume(s, v) => {
-                Action::Command(self.handle_command(s, PlayerCommand::Volume(v)))
+            Message::Volume(service_name, message) => {
+                let command = match message.value() {
+                    Some(volume) => {
+                        self.handle_command(service_name.clone(), PlayerCommand::Volume(volume))
+                    }
+                    None => Task::none(),
+                };
+                let remote = match self.volumes.get_mut(&service_name) {
+                    Some(remote) => remote
+                        .update(message)
+                        .map(move |m| Message::Volume(service_name.clone(), m)),
+                    None => Task::none(),
+                };
+                Action::Command(Task::batch([command, remote]))
             }
-            Message::Event(event) => {
-                if event.apply(&mut self.service) == crate::services::Applied::Updated
-                    && !self.is_playing()
-                {
-                    self.bars.clear();
+            Message::Raise(s) => {
+                Action::CommandAndCloseMenu(self.handle_command(s, PlayerCommand::Raise))
+            }
+            Message::ActivePrev => self.active_command(PlayerCommand::Prev),
+            Message::ActivePlayPause => self.active_command(PlayerCommand::PlayPause),
+            Message::ActiveNext => self.active_command(PlayerCommand::Next),
+            Message::ActiveVolumeUp => self.active_volume_command(VOLUME_SCROLL_STEP),
+            Message::ActiveVolumeDown => self.active_volume_command(-VOLUME_SCROLL_STEP),
+            Message::Event(event) => match event {
+                ServiceEvent::Init(s) => {
+                    self.service = Some(s);
+                    self.refresh_last_active();
+                    self.sync_volumes();
+                    Action::None
                 }
-                Action::None
-            }
+                ServiceEvent::Update(d) => {
+                    if let Some(service) = self.service.as_mut() {
+                        service.update(d);
+                    }
+                    self.refresh_last_active();
+                    self.sync_volumes();
+                    if !self.is_playing() {
+                        self.bars.clear();
+                    }
+                    Action::None
+                }
+                ServiceEvent::Error(_) => Action::None,
+            },
             Message::ConfigReloaded(c) => {
                 self.config = c;
                 Action::None
@@ -269,6 +376,13 @@ impl MediaPlayer {
                             .wrapping(text::Wrapping::WordOrGlyph)
                             .size(font_size.sm)
                             .width(Length::Fill);
+                        // Brings the player's window to the front; see `Message::Raise`.
+                        let raise_button = icon_button(StaticIcon::OpenWindow)
+                            .kind(ButtonKind::Transparent)
+                            .on_press(Message::Raise(d.service.clone()));
+                        let title = row![title, raise_button]
+                            .spacing(space.xs)
+                            .align_y(Vertical::Center);
                         let description = column![title, artists, album]
                             .spacing(space.xxs)
                             .width(LEFT_COLUMN_WIDTH);
@@ -294,14 +408,16 @@ impl MediaPlayer {
                             .spacing(space.xs),
                         )
                         .center_x(RIGHT_COLUMN_WIDTH);
-                        let volume_slider: Option<Element<'_, _>> = d.volume.map(|v| {
-                            slider(0.0..=100.0, v, move |v| {
-                                Message::SetVolume(d.service.clone(), v)
-                            })
-                            .width(LEFT_COLUMN_WIDTH)
-                            .style(crate::theme::slider_style)
-                            .into()
-                        });
+                        let volume_slider: Option<Element<'_, _>> =
+                            self.volume_of(&d.service).map(|v| {
+                                let service_name = d.service.clone();
+                                let s = slider(0.0..=100.0, v, remote_value::Message::Request)
+                                    .on_release(remote_value::Message::Timeout)
+                                    .width(LEFT_COLUMN_WIDTH)
+                                    .style(crate::theme::slider_style);
+                                Element::<'_, remote_value::Message<f64>>::from(s)
+                                    .map(move |m| Message::Volume(service_name.clone(), m))
+                            });
                         let cover: Option<Element<'_, _>> = (!is_closing)
                             .then(|| {
                                 d.metadata
@@ -309,7 +425,7 @@ impl MediaPlayer {
                                     .and_then(|m| m.art_url.as_ref())
                                     .map(|url| {
                                         let inner: Element<'_, _> = service
-                                            .cover(url)
+                                            .get_cover(url)
                                             .map(|handle| {
                                                 image(handle)
                                                     .filter_method(image::FilterMethod::Linear)
@@ -388,7 +504,7 @@ impl MediaPlayer {
                     }))
                     .spacing(space.md)
                 ))
-                .max_height(MAX_MENU_HEIGHT)
+                .max_height(600)
             )
             .spacing(space.xs)
             .into(),
@@ -407,6 +523,29 @@ impl MediaPlayer {
                 .map(Message::Event),
             _ => Task::none(),
         }
+    }
+
+    fn active_command(&mut self, command: PlayerCommand) -> Action {
+        match self.active_player().map(|p| p.service.clone()) {
+            Some(service) => Action::Command(self.handle_command(service, command)),
+            None => Action::None,
+        }
+    }
+
+    fn active_volume_command(&mut self, delta: f64) -> Action {
+        let Some(service_name) = self.active_player().map(|p| p.service.clone()) else {
+            return Action::None;
+        };
+        // Players that don't expose Volume over MPRIS have no cache entry and
+        // can't be adjusted at all.
+        let Some(current) = self.volume_of(&service_name) else {
+            return Action::None;
+        };
+        let new_volume = (current + delta).clamp(0.0, 100.0);
+        self.update(Message::Volume(
+            service_name,
+            remote_value::Message::RequestAndTimeout(new_volume),
+        ))
     }
 
     fn field_value(metadata: &MprisPlayerMetadata, field: MediaPlayerTextField) -> Option<String> {
@@ -575,7 +714,13 @@ fn cava_stream(framerate: u32) -> impl iced::futures::Stream<Item = Vec<f32>> {
              [smoothing]\nmonstercat = 1\n"
         );
 
-        let config_path = std::env::temp_dir().join("ashell_cava.cfg");
+        let config_path = match xdg::private_dir(true) {
+            Ok(dir) => dir.join("ashell_cava.cfg"),
+            Err(e) => {
+                log::error!("cava: failed to locate a private config directory: {e:#}");
+                return;
+            }
+        };
         if let Err(e) = tokio::fs::write(&config_path, &cava_config).await {
             log::error!("cava: failed to write config: {e}");
             return;

@@ -23,6 +23,11 @@ pub trait NetworkBackend: Send + Sync {
     /// Initializes the backend and fetches the initial network data.
     async fn initialize_data(&self) -> anyhow::Result<NetworkData>;
 
+    // / Subscribes to network events from the backend.
+    // / Returns a stream of `NetworkEvent`s.
+    // NOTE: the backend implementation diverged and the lifetimes are unhappy
+    //async fn subscribe_events(&self) -> anyhow::Result<impl Stream<Item = NetworkEvent>>;
+
     /// Toggles the airplane mode.
     async fn set_airplane_mode(&self, enable: bool) -> anyhow::Result<()>;
 
@@ -33,10 +38,15 @@ pub trait NetworkBackend: Send + Sync {
     async fn set_wifi_enabled(&self, enable: bool) -> anyhow::Result<()>;
 
     /// Connects to a specific access point, potentially with a password.
+    /// Returns the updated list of known connections.
+    ///
+    /// `connect_once` avoids persisting the profile to disk. Backends without
+    /// support ignore it.
     async fn select_access_point(
         &self,
         ap: &AccessPointData,
         password: Option<String>,
+        connect_once: bool,
     ) -> anyhow::Result<()>;
 
     async fn known_connections(&self) -> anyhow::Result<Vec<KnownConnection>>;
@@ -67,15 +77,61 @@ pub enum NetworkEvent {
     ScanRequested(Vec<OwnedObjectPath>),
     ScanCompleted(OwnedObjectPath),
     ScanningNearbyWifi(bool),
+    Psk {
+        ssid: String,
+        outcome: PskOutcome,
+    },
+}
+
+/// The `T:` field of a `WIFI:` URI. SAE stays distinct because WPA3-only
+/// access points reject `T:WPA`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WifiSecurity {
+    Wpa,
+    Sae,
+}
+
+impl WifiSecurity {
+    pub fn qr_auth_type(self) -> &'static str {
+        match self {
+            WifiSecurity::Wpa => "WPA",
+            WifiSecurity::Sae => "SAE",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum PskOutcome {
+    Password {
+        psk: String,
+        security: WifiSecurity,
+        /// The QR code needs `H:true` or scanners won't find the network.
+        hidden: bool,
+    },
+    Open {
+        hidden: bool,
+    },
+    /// Secured, but the passphrase isn't readable (agent-owned, not-saved,
+    /// or polkit denied).
+    PasswordUnavailable,
+    /// Enterprise, WEP or OWE: not encodable in a `WIFI:` URI.
+    Unsupported,
+    /// Reading failed; the service logs the cause.
+    Error,
 }
 
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {
-    ScanNearbyWiFi,
+    ScanNearByWiFi,
     ToggleWiFi,
     ToggleAirplaneMode,
-    SelectAccessPoint((AccessPointData, Option<String>)),
+    SelectAccessPoint {
+        access_point: AccessPointData,
+        password: Option<String>,
+        connect_once: bool,
+    },
     ToggleVpn(Vpn),
+    ReadPsk(String),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -92,15 +148,20 @@ pub struct AccessPointData {
 }
 
 impl AccessPointData {
-    /// Returns true if this access point is better than `other`
-    /// (by max_bitrate, frequency, strength).
+    /// Returns true if the first access point (by max_bitrate, frequency, strength) is better than the second.
     /// Comparison order: max_bitrate > frequency > strength (higher values are better)
     #[inline]
-    pub fn is_better_than(&self, other: &Self) -> bool {
-        self.max_bitrate > other.max_bitrate
-            || (self.max_bitrate == other.max_bitrate
-                && (self.frequency > other.frequency
-                    || (self.frequency == other.frequency && self.strength > other.strength)))
+    pub fn is_better(
+        max_bitrate1: u32,
+        frequency1: u32,
+        strength1: u8,
+        max_bitrate2: u32,
+        frequency2: u32,
+        strength2: u8,
+    ) -> bool {
+        max_bitrate1 > max_bitrate2
+            || (max_bitrate1 == max_bitrate2
+                && (frequency1 > frequency2 || (frequency1 == frequency2 && strength1 > strength2)))
     }
 }
 
@@ -116,6 +177,16 @@ pub enum KnownConnection {
     Vpn(Vpn),
 }
 
+pub fn frequency_band(frequency_mhz: u32) -> Option<&'static str> {
+    match frequency_mhz {
+        2400..=2500 => Some("2.4 GHz"),
+        4900..=5924 => Some("5 GHz"),
+        5925..=7125 => Some("6 GHz"),
+        57000..=71000 => Some("60 GHz"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ActiveConnectionInfo {
     Wired {
@@ -124,6 +195,7 @@ pub enum ActiveConnectionInfo {
     WiFi {
         name: String,
         strength: u8,
+        frequency: u32,
     },
     Vpn {
         name: String,
@@ -153,6 +225,15 @@ pub struct NetworkData {
     pub scanning_nearby_wifi: bool,
 }
 
+impl NetworkData {
+    /// Whether a saved Wi-Fi profile exists for `ssid`.
+    pub fn is_known_ssid(&self, ssid: &str) -> bool {
+        self.known_connections
+            .iter()
+            .any(|c| matches!(c, KnownConnection::AccessPoint(ap) if ap.ssid == ssid))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NetworkService {
     data: NetworkData,
@@ -166,6 +247,12 @@ impl Deref for NetworkService {
 
     fn deref(&self) -> &Self::Target {
         &self.data
+    }
+}
+
+impl NetworkService {
+    pub fn is_network_manager(&self) -> bool {
+        matches!(self.backend_choice, BackendChoice::NetworkManager)
     }
 }
 
@@ -264,6 +351,7 @@ impl ReadOnlyService for NetworkService {
                 self.data.wireless_access_points = wireless_access_points;
             }
             NetworkEvent::RequestPasswordForSSID(_) => {}
+            NetworkEvent::Psk { .. } => {}
         }
     }
 
@@ -354,18 +442,19 @@ impl NetworkBackend for BackendChoiceWithConnection {
         &self,
         ap: &AccessPointData,
         password: Option<String>,
+        connect_once: bool,
     ) -> anyhow::Result<()> {
         match self.choice {
             BackendChoice::NetworkManager => {
                 NetworkDbus::new(&self.conn)
                     .await?
-                    .select_access_point(ap, password)
+                    .select_access_point(ap, password, connect_once)
                     .await
             }
             BackendChoice::Iwd => {
                 IwdDbus::new(&self.conn)
                     .await?
-                    .select_access_point(ap, password)
+                    .select_access_point(ap, password, connect_once)
                     .await
             }
         }
@@ -402,6 +491,13 @@ impl NetworkBackend for BackendChoiceWithConnection {
 }
 
 impl NetworkService {
+    /// Whether joining `ssid` can skip saving it. Needs backend support and no
+    /// saved profile, since an existing profile is reused as is.
+    /// See <https://github.com/MalpenZibo/ashell/issues/509> for IWD support.
+    pub fn can_connect_once(&self, ssid: &str) -> bool {
+        matches!(self.backend_choice, BackendChoice::NetworkManager) && !self.is_known_ssid(ssid)
+    }
+
     async fn start_listening(state: State, output: &mut Sender<ServiceEvent<Self>>) -> State {
         match state {
             State::Init => match zbus::Connection::system().await {
@@ -595,7 +691,7 @@ impl Service for NetworkService {
                     |airplane_mode| ServiceEvent::Update(NetworkEvent::AirplaneMode(airplane_mode)),
                 )
             }
-            NetworkCommand::ScanNearbyWiFi => match self.backend_choice {
+            NetworkCommand::ScanNearByWiFi => match self.backend_choice {
                 BackendChoice::NetworkManager => {
                     let conn = self.conn.clone();
                     Task::perform(
@@ -605,14 +701,14 @@ impl Service for NetworkService {
                                     Ok(device_paths) => device_paths,
                                     Err(err) => {
                                         error!(
-                                            "ScanNearbyWiFi command: NetworkManager scan request failed: {err}"
+                                            "ScanNearByWiFi command: NetworkManager scan request failed: {err}"
                                         );
                                         Vec::new()
                                     }
                                 },
                                 Err(err) => {
                                     error!(
-                                        "ScanNearbyWiFi command: Failed to create NetworkDbus: {err}"
+                                        "ScanNearByWiFi command: Failed to create NetworkDbus: {err}"
                                     );
                                     Vec::new()
                                 }
@@ -647,10 +743,20 @@ impl Service for NetworkService {
                     |wifi_enabled| ServiceEvent::Update(NetworkEvent::WiFiEnabled(wifi_enabled)),
                 )
             }
-            NetworkCommand::SelectAccessPoint((access_point, password)) => Task::perform(
+            NetworkCommand::SelectAccessPoint {
+                access_point,
+                password,
+                connect_once,
+            } => Task::perform(
                 async move {
-                    if let Err(e) = bc.select_access_point(&access_point, password).await {
-                        warn!("Failed to select access point: {e:#}");
+                    if let Err(err) = bc
+                        .select_access_point(&access_point, password, connect_once)
+                        .await
+                    {
+                        error!(
+                            "SelectAccessPoint command: failed to activate '{}': {err}",
+                            access_point.ssid
+                        );
                     }
                     bc.known_connections().await.unwrap_or_default()
                 },
@@ -673,9 +779,7 @@ impl Service for NetworkService {
                         } else {
                             (vpn.path, true)
                         };
-                        if let Err(e) = bc.set_vpn(object_path, new_state).await {
-                            warn!("Failed to toggle VPN: {e:#}");
-                        }
+                        bc.set_vpn(object_path, new_state).await.unwrap_or_default();
                         let res = bc.known_connections().await;
                         debug!("VPN toggled: {res:?}");
                         res.unwrap_or_default()
@@ -685,6 +789,37 @@ impl Service for NetworkService {
                     },
                 )
             }
+            NetworkCommand::ReadPsk(ssid) => match self.backend_choice {
+                BackendChoice::NetworkManager => {
+                    let conn = self.conn.clone();
+                    Task::perform(
+                        async move {
+                            let result =
+                                async { NetworkDbus::new(&conn).await?.read_psk(&ssid).await }
+                                    .await;
+
+                            let outcome = match result {
+                                Ok(outcome) => outcome,
+                                Err(err) => {
+                                    warn!("read_psk failed for {ssid}: {err}");
+                                    PskOutcome::Error
+                                }
+                            };
+
+                            NetworkEvent::Psk { ssid, outcome }
+                        },
+                        ServiceEvent::Update,
+                    )
+                }
+                BackendChoice::Iwd => {
+                    warn!("ReadPsk command: Wi-Fi sharing requires the NetworkManager backend");
+
+                    Task::done(ServiceEvent::Update(NetworkEvent::Psk {
+                        ssid,
+                        outcome: PskOutcome::Error,
+                    }))
+                }
+            },
         }
     }
 }

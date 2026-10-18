@@ -1,13 +1,13 @@
 use super::icons::{StaticIcon, icon, icon_button};
 use crate::{
-    components::{ButtonHierarchy, ButtonKind, CONTROL_ROW_HEIGHT, styled_button},
+    components::{ButtonHierarchy, ButtonKind, styled_button},
     t,
     theme::use_theme,
 };
 use iced::{
     Alignment, Element, Length, SurfaceId,
     id::Id,
-    widget::{column, row, space, text, text_input},
+    widget::{column, row, space, text, text_input, toggler},
 };
 
 pub const PASSWORD_INPUT_ID: Id = Id::new("network-password-input");
@@ -16,6 +16,7 @@ pub const PASSWORD_INPUT_ID: Id = Id::new("network-password-input");
 pub enum Message {
     PasswordChanged(String),
     TogglePasswordVisibility,
+    ConnectOnceToggled(bool),
     DialogConfirmed(SurfaceId),
     DialogCancelled(SurfaceId),
 }
@@ -26,6 +27,8 @@ pub fn view<'a>(
     current_password: &str,
     show_password: bool,
     warning_only: bool,
+    show_connect_once: bool,
+    connect_once: bool,
 ) -> Element<'a, Message> {
     let (space, font_size, text_input_style) =
         use_theme(|theme| (theme.space, theme.font_size, theme.text_input_style()));
@@ -80,16 +83,28 @@ pub fn view<'a>(
         ),
     )
     .push(
+        (warning_only && show_connect_once).then_some(
+            row!(
+                text(t!("password-dialog-connect-once")).width(Length::Fill),
+                toggler(connect_once)
+                    .on_toggle(Message::ConnectOnceToggled)
+                    .width(Length::Shrink),
+            )
+            .spacing(space.sm)
+            .align_y(Alignment::Center),
+        ),
+    )
+    .push(
         row!(
             space::horizontal(),
             styled_button(t!("password-dialog-cancel"))
                 .kind(ButtonKind::Outline)
-                .height(Length::Fixed(CONTROL_ROW_HEIGHT))
+                .height(Length::Fixed(50.))
                 .on_press(Message::DialogCancelled(id)),
             styled_button(t!("password-dialog-confirm"))
                 .kind(ButtonKind::Solid)
                 .hierarchy(ButtonHierarchy::Primary)
-                .height(Length::Fixed(CONTROL_ROW_HEIGHT))
+                .height(Length::Fixed(50.))
                 .on_press_maybe(if !warning_only && current_password.is_empty() {
                     None
                 } else {

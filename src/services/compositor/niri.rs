@@ -6,7 +6,7 @@ use crate::services::ServiceEvent;
 use anyhow::{Context, Result, anyhow};
 use itertools::Itertools;
 use niri_ipc::{
-    Action, Event, Reply, Request, WorkspaceReferenceArg,
+    Action, Event, Reply, Request, Response, WorkspaceReferenceArg,
     state::{EventStreamState, EventStreamStatePart},
 };
 use std::{collections::HashMap, env, os::unix::net::UnixStream as StdUnixStream};
@@ -31,21 +31,35 @@ pub async fn execute_command(cmd: CompositorCommand) -> Result<()> {
                 ));
             }
         },
-        CompositorCommand::ToggleSpecialWorkspace(_) => {
+        CompositorCommand::FocusNamedWorkspace(_)
+        | CompositorCommand::FocusSpecialWorkspace(_)
+        | CompositorCommand::ToggleSpecialWorkspace(_) => {
             return Err(anyhow!("Special workspaces not supported in Niri backend"));
+        }
+        CompositorCommand::FocusMonitor(_) => {
+            return Err(anyhow!("FocusMonitor by ID not supported in Niri backend"));
+        }
+        CompositorCommand::ScrollWorkspace(dir) => {
+            if dir > 0 {
+                Action::FocusWorkspaceUp {}
+            } else {
+                Action::FocusWorkspaceDown {}
+            }
         }
         CompositorCommand::NextLayout => Action::SwitchLayout {
             layout: niri_ipc::LayoutSwitchTarget::Next,
         },
         CompositorCommand::CustomDispatch(action, args) => {
             if action == "spawn" {
-                Action::Spawn {
-                    command: args.split_whitespace().map(String::from).collect(),
-                }
+                Action::SpawnSh { command: args }
             } else {
                 return Err(anyhow!("Unknown custom dispatch: {}", action));
             }
         }
+
+        CompositorCommand::FocusAppWindow { pid, apps, title } => Action::FocusWindow {
+            id: app_window_id(pid, &apps, title.as_deref()).await?,
+        },
     };
 
     send_command_request(&mut stream, Request::Action(action)).await?;
@@ -135,6 +149,10 @@ async fn connect() -> Result<UnixStream> {
 }
 
 async fn send_command_request(stream: &mut UnixStream, request: Request) -> Result<()> {
+    send_request(stream, request).await.map(|_| ())
+}
+
+async fn send_request(stream: &mut UnixStream, request: Request) -> Result<Response> {
     let mut json = serde_json::to_string(&request)?;
     json.push('\n');
     stream.write_all(json.as_bytes()).await?;
@@ -145,7 +163,49 @@ async fn send_command_request(stream: &mut UnixStream, request: Request) -> Resu
     reader.read_line(&mut response_line).await?;
 
     let reply: Reply = serde_json::from_str(&response_line)?;
-    reply.map_err(|e| anyhow!("Niri error: {}", e)).map(|_| ())
+    reply.map_err(|e| anyhow!("Niri error: {}", e))
+}
+
+async fn app_window_id(pid: Option<u32>, apps: &[String], title: Option<&str>) -> Result<u64> {
+    let mut stream = connect().await?;
+
+    let Response::Windows(windows) = send_request(&mut stream, Request::Windows).await? else {
+        return Err(anyhow!("Unexpected reply to a Niri windows request"));
+    };
+
+    // XWayland windows report xwayland-satellite's pid, so fall back to the app
+    // id when no window has the player's pid.
+    let by_pid: Vec<_> = windows
+        .iter()
+        .filter(|w| {
+            w.pid
+                .zip(pid)
+                .is_some_and(|(w, p)| i64::from(w) == i64::from(p))
+        })
+        .collect();
+    let candidates = if by_pid.is_empty() {
+        windows
+            .iter()
+            .filter(|w| super::app_matches(w.app_id.as_deref(), apps))
+            .collect()
+    } else {
+        by_pid
+    };
+
+    // Prefer the window whose title shows the media, then the focused one (none
+    // usually is while ashell's menu is open), then the most recently focused;
+    // windows never focused sort last.
+    candidates
+        .into_iter()
+        .max_by_key(|w| {
+            (
+                super::title_matches(w.title.as_deref(), title),
+                w.is_focused,
+                w.focus_timestamp.map(|t| (t.secs, t.nanos)),
+            )
+        })
+        .map(|w| w.id)
+        .ok_or_else(|| anyhow!("No window found for pid {pid:?} or apps {apps:?}"))
 }
 
 fn map_state(niri: &EventStreamState) -> CompositorState {
@@ -164,7 +224,7 @@ fn map_state(niri: &EventStreamState) -> CompositorState {
         })
         .collect();
 
-    // INFO: this is how niri sorts the outputs internally (niri msg outputs - in client.rs)
+    // INFO: this is how niri sorts the outpus internally (niri msg outputs - in client.rs)
     let outputs = output_to_active_ws
         .keys()
         .sorted_unstable()

@@ -1,10 +1,6 @@
 use std::time::Duration;
 use tokio::time::sleep;
 
-/// How long the optimistic "requested" value stays visible before the
-/// source-of-truth value takes over again.
-const OPTIMISTIC_TIMEOUT: Duration = Duration::from_secs(1);
-
 /// A helper for ensuring responsive user interface,
 /// when handling async state
 #[derive(Debug, Default, Clone)]
@@ -17,12 +13,11 @@ pub struct Remote<Value> {
     timeout: Option<iced::task::Handle>,
 }
 
-impl<Value> Remote<Value> {
+impl<Value: Default> Remote<Value> {
     pub fn new(value: Value) -> Self {
         Self {
-            requested: None,
             received: value,
-            timeout: None,
+            ..Default::default()
         }
     }
 }
@@ -35,8 +30,6 @@ where
         self.received = value
     }
 
-    /// The value to display: the last requested one while its timeout is
-    /// still pending, else the received value from the backend.
     pub fn value(&self) -> Value {
         self.requested.unwrap_or(self.received)
     }
@@ -65,7 +58,7 @@ where
     fn start_timeout(&mut self) -> iced::Task<Message<Value>> {
         let (task, handle) = iced::Task::perform(
             async {
-                sleep(OPTIMISTIC_TIMEOUT).await;
+                sleep(Duration::from_secs(1)).await;
             },
             |_| Message::<Value>::ShowReceived,
         )

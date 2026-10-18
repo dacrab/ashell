@@ -6,12 +6,8 @@ use crate::{
     osd,
 };
 use iced::{OutputEvent, SurfaceId};
+use std::path::PathBuf;
 
-// `Settings(modules::settings::Message)` dominates real-world usage and that
-// enum is inherently large (it wraps every settings sub-menu); the remaining
-// variants are cheap. The size difference is acceptable because this enum is
-// passed by value only between iced and `App::update`, never stored.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Message {
     ConfigChanged(Box<Config>),
@@ -38,4 +34,5 @@ pub enum Message {
     ResumeFromSleep,
     None,
     ToggleVisibility,
+    LoadConfig(PathBuf),
 }

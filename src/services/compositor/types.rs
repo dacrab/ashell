@@ -127,9 +127,23 @@ pub enum CompositorEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum CompositorCommand {
     FocusWorkspace(i32),
+    FocusNamedWorkspace(String),
+    FocusSpecialWorkspace(String),
+    FocusMonitor(i128),
     ToggleSpecialWorkspace(String),
+    ScrollWorkspace(i32),           // +1 or -1
     CustomDispatch(String, String), // For "vdesk"
     NextLayout,
+    /// Focus a window of an application: one owned by `pid`, or, when none is
+    /// (XWayland or sandboxed apps report another pid), one whose app id or
+    /// class is in `apps`. Among those, prefer the one whose title contains
+    /// `title` (e.g. the browser window showing the tab that plays the media).
+    FocusAppWindow {
+        pid: Option<u32>,
+        apps: Vec<String>,
+        title: Option<String>,
+    },
 }

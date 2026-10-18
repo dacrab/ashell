@@ -28,8 +28,21 @@ password-dialog-open-network-warning =
     « { $ssid } » est un réseau ouvert. Les données envoyées via cette connexion peuvent être visibles par d'autres.
     Voulez-vous tout de même vous connecter ?
 password-dialog-insert-password = Saisissez le mot de passe pour vous connecter à : { $ssid }
+password-dialog-connect-once = Se connecter uniquement cette fois
 password-dialog-cancel = Annuler
 password-dialog-confirm = Confirmer
+
+## Partage du Wi-Fi
+share-wifi-title = Partager le Wi-Fi
+share-wifi-subtitle =
+    Scannez ce QR code avec un autre appareil pour rejoindre
+    « { $ssid } »
+share-wifi-password-label = Mot de passe Wi-Fi :
+share-wifi-password-open-network = Réseau ouvert — aucun mot de passe requis.
+share-wifi-password-unavailable-message = Le mot de passe de ce réseau n'est pas lisible, il ne peut donc pas être partagé.
+share-wifi-unsupported-message = La méthode d'authentification de ce réseau ne peut pas être partagée par QR code.
+share-wifi-error-message = Impossible de lire le mot de passe Wi-Fi.
+share-wifi-close = Fermer
 
 ## OSD
 osd-airplane-toggle =
@@ -89,9 +102,18 @@ settings-power-status-discharging = En décharge
 settings-power-status-not-charging = Pas en charge
 settings-power-status-unknown = Inconnu
 settings-power-status-full = Pleine
+settings-power-health = Santé { $percentage } % ({ $energy_full } / { $energy_full_design } Wh)
+settings-power-charge-cycles =
+    { $count ->
+        [one] { $count } cycle de charge
+       *[other] { $count } cycles de charge
+    }
 
 ## Paramètres — inhibiteur de veille
 settings-idle-inhibitor = Inhibiteur de veille
+
+## Paramètres — ne pas déranger
+settings-dnd = Ne pas déranger
 
 ## Paramètres — infobulles
 settings-tooltip-empty = Rien à afficher
@@ -103,7 +125,6 @@ settings-tooltip-empty-battery = Aucune information de batterie
 
 ## Module météo
 tempo-feels-like = Ressenti { $value }{ $unit }
-tempo-coordinates = Lat : { $lat }, Lon : { $lon }
 tempo-humidity = Humidité
 tempo-wind = Vent
 

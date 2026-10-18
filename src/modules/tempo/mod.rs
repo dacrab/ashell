@@ -23,6 +23,57 @@ use crate::{
 
 pub use self::weather::weather_icon;
 
+/// Specifiers whose output changes at least once per second, so a format
+/// containing any of them has to be refreshed every second.
+const SECOND_SPECIFIERS: [&str; 15] = [
+    "%S",  // seconds
+    "%T",  // %H:%M:%S
+    "%X",  // locale time representation, with seconds
+    "%r",  // 12-hour clock time, with seconds
+    "%c",  // locale date and time, with seconds
+    "%+",  // ISO 8601 / RFC 3339, with seconds
+    "%s",  // seconds since epoch
+    "%f",  // nanoseconds, also covers ".%f"
+    "%.f", // nanoseconds, left aligned
+    "%3f", // milliseconds
+    "%6f", // microseconds
+    "%9f", // nanoseconds
+    "%.3f", "%.6f", "%.9f", // the left aligned fractional variants
+];
+
+fn shows_seconds(format: &str) -> bool {
+    let mut rest = format;
+
+    while let Some(percent) = rest.find('%') {
+        let after = &rest[percent + 1..];
+
+        // `%%` is a literal percent sign, not the start of a specifier.
+        if let Some(literal) = after.strip_prefix('%') {
+            rest = literal;
+            continue;
+        }
+
+        // skip padding flags
+        let specifier = after.trim_start_matches(['-', '_', '0']);
+
+        if SECOND_SPECIFIERS
+            .iter()
+            .any(|candidate| specifier.starts_with(&candidate[1..]))
+        {
+            return true;
+        }
+
+        rest = specifier;
+    }
+
+    false
+}
+
+/// Local wall-clock minute, so a system time zone change also triggers a redraw.
+fn local_minute(now: DateTime<Local>) -> i64 {
+    now.naive_local().and_utc().timestamp().div_euclid(60)
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     Update,
@@ -42,6 +93,10 @@ pub enum TimezoneDirection {
     Backward,
 }
 
+pub enum Action {
+    None,
+}
+
 pub struct Tempo {
     config: TempoModuleConfig,
     date: DateTime<Local>,
@@ -51,14 +106,11 @@ pub struct Tempo {
     current_format_index: usize,
     current_timezone_index: usize,
     location_visible: bool,
-    /// Bar clock text, recomputed in `update()` — `view()` runs every frame
-    /// and must not re-parse the timezone or re-format with chrono.
-    display_text: String,
 }
 
 impl Tempo {
     pub fn new(config: TempoModuleConfig) -> Self {
-        let mut tempo = Self {
+        Self {
             config,
             date: Local::now(),
             selected_date: None,
@@ -67,46 +119,49 @@ impl Tempo {
             current_format_index: 0,
             current_timezone_index: 0,
             location_visible: true,
-            display_text: String::new(),
-        };
-        tempo.refresh_display_text();
-        tempo
-    }
-
-    fn refresh_display_text(&mut self) {
-        self.display_text = self.time_str(self.current_format(), self.current_timezone_index, None);
+        }
     }
 
     fn current_format(&self) -> &str {
-        self.config
-            .formats
-            .get(self.current_format_index)
-            .or_else(|| self.config.formats.first())
-            .unwrap_or(&self.config.clock_format)
+        if !self.config.formats.is_empty() {
+            self.config
+                .formats
+                .get(self.current_format_index)
+                .or_else(|| self.config.formats.first())
+                .unwrap_or(&self.config.clock_format)
+        } else {
+            &self.config.clock_format
+        }
     }
 
-    pub fn update(&mut self, message: Message) {
-        let mut clock_dirty = false;
+    pub fn update(&mut self, message: Message) -> Action {
         match message {
             Message::Update => {
                 self.date = Local::now();
-                clock_dirty = true;
+
+                Action::None
             }
             Message::ChangeSelectDate(selected_date) => {
                 self.selected_date = selected_date;
+
+                Action::None
             }
             Message::UpdateWeather(data) => {
                 self.weather_data = Some(*data);
+
+                Action::None
             }
             Message::UpdateLocation(location) => {
                 self.location = Some(location);
+
+                Action::None
             }
             Message::CycleFormat => {
                 if !self.config.formats.is_empty() {
                     self.current_format_index =
                         (self.current_format_index + 1) % self.config.formats.len();
                 }
-                clock_dirty = true;
+                Action::None
             }
             Message::CycleTimezone(direction) => {
                 if !self.config.timezones.is_empty() {
@@ -119,7 +174,7 @@ impl Tempo {
                             .unwrap_or(len - 1),
                     };
                 }
-                clock_dirty = true;
+                Action::None
             }
             Message::SetTimezone(index) => {
                 if !self.config.timezones.is_empty() {
@@ -128,7 +183,7 @@ impl Tempo {
                         self.current_timezone_index = index;
                     }
                 }
-                clock_dirty = true;
+                Action::None
             }
             Message::ConfigReloaded(new_config) => {
                 if new_config.formats.is_empty()
@@ -151,23 +206,22 @@ impl Tempo {
                 }
 
                 self.config = new_config;
-                clock_dirty = true;
+                Action::None
             }
             Message::ToggleLocationVisibility => {
                 self.location_visible = !self.location_visible;
+                Action::None
             }
-        }
-        if clock_dirty {
-            self.refresh_display_text();
         }
     }
 
     pub fn view(&'_ self) -> Element<'_, Message> {
         let space = use_theme(|t| t.space);
+        let display_text = self.time_str(self.current_format(), self.current_timezone_index, None);
 
         Row::with_capacity(2)
             .push(self.weather_indicator())
-            .push(text(self.display_text.clone()))
+            .push(text(display_text))
             .align_y(Vertical::Center)
             .spacing(space.sm)
             .into()
@@ -217,34 +271,26 @@ impl Tempo {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        let second_specifiers = [
-            "%S",  // Seconds (00-60)
-            "%T",  // Hour:Minute:Second
-            "%X",  // Locale time representation with seconds
-            "%r",  // 12-hour clock time with seconds
-            "%:z", // UTC offset with seconds
-            "%s",  // Seconds since epoch
-        ];
+        let shows_seconds = shows_seconds(self.current_format());
 
-        let current_format = self.current_format();
-
-        let interval = if second_specifiers
-            .iter()
-            .any(|&spec| current_format.contains(spec))
-        {
-            Duration::from_secs(1)
-        } else {
-            Duration::from_secs(5)
-        };
-
-        let time_sub = Subscription::run_with(interval, |interval| {
-            let interval = *interval;
+        let time_sub = Subscription::run_with(shows_seconds, |&shows_seconds| {
             channel(
                 100,
                 async move |mut output: iced::futures::channel::mpsc::Sender<Message>| {
-                    let mut interval = tokio::time::interval(interval);
+                    let period = if shows_seconds { 1 } else { 5 };
+                    let mut interval = tokio::time::interval(Duration::from_secs(period));
+                    let mut last_minute = None;
                     loop {
                         interval.tick().await;
+
+                        if !shows_seconds {
+                            let minute = local_minute(Local::now());
+                            if last_minute == Some(minute) {
+                                continue;
+                            }
+                            last_minute = Some(minute);
+                        }
+
                         output.send(Message::Update).await.ok();
                     }
                 },
@@ -295,9 +341,7 @@ impl Tempo {
                             }
                         }
 
-                        // Cap the backoff so persistent failures don't push
-                        // retries further and further apart.
-                        failed_attempt = (failed_attempt + 1).min(30);
+                        failed_attempt += 1;
                         tokio::time::sleep(Duration::from_secs(60 * failed_attempt)).await;
                     }
                 })

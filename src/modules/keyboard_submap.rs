@@ -3,7 +3,7 @@ use iced::{Element, Subscription, widget::text};
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Event(Box<ServiceEvent<CompositorService>>),
+    ServiceEvent(ServiceEvent<CompositorService>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -14,9 +14,15 @@ pub struct KeyboardSubmap {
 impl KeyboardSubmap {
     pub fn update(&mut self, message: Message) {
         match message {
-            Message::Event(event) => {
-                event.apply(&mut self.service);
-            }
+            Message::ServiceEvent(event) => match event {
+                ServiceEvent::Init(s) => self.service = Some(s),
+                ServiceEvent::Update(e) => {
+                    if let Some(service) = &mut self.service {
+                        service.update(e);
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
@@ -31,6 +37,6 @@ impl KeyboardSubmap {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
-        CompositorService::subscribe().map(|event| Message::Event(Box::new(event)))
+        CompositorService::subscribe().map(Message::ServiceEvent)
     }
 }

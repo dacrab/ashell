@@ -7,6 +7,13 @@ sidebar_position: 4
 This document shows every available configuration option with its default value.
 Commented-out lines show the default; uncomment and change to customize.
 
+:::warning
+TOML has no `None` literal. Where this page says *(default: None)* it means the
+key is simply absent; leave it commented out. Writing `key = None` is a parse
+error, and a config that fails to parse makes ashell fall back to the *entire*
+default configuration.
+:::
+
 ```toml
 # ── General ───────────────────────────────────────────────────────────────────
 
@@ -35,13 +42,18 @@ right = [ "SystemInfo", "MediaPlayer", [ "Tray", "Tempo", "Privacy", "Settings" 
 # left = [ "Workspaces" ]
 # center = [ "WindowTitle" ]
 # right = [ [ "Tempo", "Privacy", "Settings" ] ]
+#
+# Every built-in module name: "Updates", "Workspaces", "WindowTitle",
+# "SystemInfo", "KeyboardLayout", "KeyboardSubmap", "Tray", "Tempo",
+# "Privacy", "Settings", "MediaPlayer", "Notifications".
+# Any other name refers to a [[CustomModule]] with that `name`.
 
 # ── Updates ───────────────────────────────────────────────────────────────────
 
 [updates]
 check_cmd = "checkupdates; paru -Qua"
 update_cmd = 'alacritty -e bash -c "paru; echo Done - Press enter to exit; read" &'
-interval = 3600             # seconds; minimum enforced to 1
+interval = 3600             # seconds (default); effective minimum at runtime is 60
 
 # ── Workspaces ────────────────────────────────────────────────────────────────
 
@@ -62,10 +74,14 @@ enable_workspace_filling = false  # (default)
 name = "appLauncher"
 icon = "󱗼"
 command = "walker"
-# listen_cmd = "some-command"  # yields JSON lines: {"text": "...", "alt": "..."}
-# icons = { "regex" = "icon" } # map regex on `alt` to icon
-# alert = "regex"              # show alert dot when `alt` matches regex
-# type = "Button"              # (default) "Button" or "Text"
+# listen_cmd = "some-command"    # yields JSON lines: {"text": "...", "alt": "...", "tooltip": "..."}
+# icons = { "regex" = "icon" }   # map regex on `alt` to icon
+# alert = "regex"                # show alert dot when `alt` matches regex
+# type = "Button"                # (default) "Button" or "Text"
+# on_right_click = "command"     # command to run on right-click
+# on_middle_click = "command"    # command to run on middle-click
+# on_scroll_up = "command"       # command to run on scroll up
+# on_scroll_down = "command"     # command to run on scroll down
 
 # ── Window Title ──────────────────────────────────────────────────────────────
 
@@ -83,7 +99,7 @@ truncate_title_after_length = 150 # (default) 0 means no truncation; capped at 2
 [system_info]
 indicators = [ "Cpu", "Memory", "Temperature" ]
 # indicators = [ "Cpu", "Memory", "MemorySwap", "Temperature", "IpAddress", "DownloadSpeed", "UploadSpeed" ]
-# indicators = [ { Disk = { Disk = "/dev/sda1", Name = "Root" } } ]
+# indicators = [ { Disk = "/", Name = "Root" } ]   # key is the mount point, not a device node
 interval = 5
 
 [system_info.cpu]
@@ -94,7 +110,7 @@ alert_threshold = 80
 [system_info.memory]
 warn_threshold = 70
 alert_threshold = 85
-# format = "Percentage"   # (default) or "Fraction"
+# format = "Percentage"   # (default), "Amount" or "Fraction"
 
 [system_info.temperature]
 # warn_threshold = 60     # (default: None, auto 60°C / 140°F based on unit system)
@@ -112,11 +128,18 @@ alert_threshold = 85
 
 [media_player]
 # indicator_format = "IconAndText"  # (default), "Text", or "Icon"
+                                  # aliases: "IconAndTitle" = "IconAndText", "Title" = "Text"
 # indicator_fields = ["Artist", "Title"] # (default), also supports "Album"
 # max_text_length = 100         # (default)
 # indicator_visualizer = "Background" # (default: None = disabled), "Before", or "After"
 # menu_visualizer = false       # (default) bars behind the menu cards; cava runs only while the menu is open
 # visualizer_framerate = 30     # (default) cava frames per second, clamped to 1-144
+
+[media_player.indicator_controls]
+# left = "Menu"     # (default) "Menu", "Prev", "PlayPause", "Next", or "None"
+# middle = "None"   # (default)
+# right = "None"    # (default)
+# scroll = "None"   # (default) or "Volume" to change the active player's volume
 
 # ── Tray ──────────────────────────────────────────────────────────────────────
 
@@ -144,17 +167,17 @@ show_timestamps = true
 show_bodies = true
 # grouped = false           # (default) group notifications by app
 # toast = true              # (default) enable toast popups
-# toast_position = "TopRight"  # (default) "TopLeft", "TopRight", "BottomLeft", "BottomRight"
+# toast_position = "TopRight"  # (default) "TopLeft", "TopRight", "TopCenter", "BottomLeft", "BottomRight", "BottomCenter"
 # toast_timeout = 5000      # (default) milliseconds before auto-dismiss
 # toast_limit = 5           # (default) max concurrent toasts
 # toast_max_height = 150    # (default) max height of toast cards in pixels
+# history_limit = 200      # (default) notifications kept in the menu, 1..=1000
 # blocklist = ["regex"]     # (default: []) suppress notifications from apps matching regex
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 [settings]
-# Optional: disable hover tooltips on status indicators
-# enable_tooltips = false
+# enable_tooltips = true   # (default) set to false to disable hover tooltips
 lock_cmd = "playerctl --all-players pause; nixGL hyprlock &"
 # shutdown_cmd = "shutdown now"                   # (default)
 # suspend_cmd = "systemctl suspend"               # (default)
@@ -163,23 +186,28 @@ lock_cmd = "playerctl --all-players pause; nixGL hyprlock &"
 # logout_cmd = "loginctl kill-user $(whoami)"     # (default)
 audio_sinks_more_cmd = "pavucontrol -t 3"
 audio_sources_more_cmd = "pavucontrol -t 4"
+# audio_sink_post_switch_cmd = "systemctl --user restart wireplumber"   # (default: None)
+# audio_source_post_switch_cmd = "..."                                   # (default: None)
 wifi_more_cmd = "nm-connection-editor"
 vpn_more_cmd = "nm-connection-editor"
 bluetooth_more_cmd = "blueberry"
-battery_format = "IconAndPercentage"  # (default), "Icon", "Percentage", "Time", "IconAndTime"
+battery_format = "IconAndPercentage"  # (default), "Icon", "Percentage", "IconAndPercentage", "Time", "IconAndTime", "Name", "IconAndName", "PercentageAndTime", "IconAndPercentageAndTime"
 # battery_hide_when_full = false  # (default)
 # peripheral_indicators = "All"   # (default) or { Specific = ["Keyboard", "Mouse", "Headphones", "Gamepad"] }
-peripheral_battery_format = "Icon"  # (default), "IconAndPercentage", "Percentage", etc.
+peripheral_battery_format = "Icon"  # (default), "Percentage", "IconAndPercentage", "Time", "IconAndTime", "Name", "IconAndName", "PercentageAndTime", "IconAndPercentageAndTime"
 # peripheral_expanded_by_default = false  # (default)
+# battery_health = true                   # (default) battery health and charge cycles
 audio_indicator_format = "Icon"        # (default), "IconAndPercentage", "Percentage", etc.
 microphone_indicator_format = "Icon"   # (default)
 network_indicator_format = "Icon"      # (default), "IconAndPercentage", "Percentage", "Name", "IconAndName" (Name/IconAndName show the SSID/interface/VPN name)
 bluetooth_indicator_format = "Icon"    # (default)
 brightness_indicator_format = "Icon"   # (default)
+# keyboard_backlight_slider = false     # (default) set true to show the built-in keyboard backlight slider
 volume_step = 5    # (default) step size for IPC volume up/down, range 1..=50
 max_volume = 100   # (default) max volume level, range 1..=200 (>100 enables overdrive)
 # remove_airplane_btn = false   # (default) set true to hide airplane mode button
 # remove_idle_btn = false       # (default) set true to hide idle inhibitor button
+# remove_dnd_btn = false        # (default) set true to hide do not disturb button
 indicators = [ "IdleInhibitor", "PowerProfile", "Audio", "Microphone", "Bluetooth", "Network", "Vpn", "Battery", "Brightness" ]
 # indicators = [ "IdleInhibitor", "PowerProfile", "Audio", "Microphone", "Bluetooth", "Network", "Vpn", "Battery", "PeripheralBattery", "Brightness" ]
 
@@ -207,6 +235,7 @@ enabled = false   # (default)
 
 [appearance]
 # font_name = "Sans"           # (default: None) custom font family
+# font_weight = "normal"       # (default) face of font_name: thin|extralight|light|normal|medium|semibold|bold|extrabold|black
 # scale_factor = 1.0           # (default) range: 0.0 < x <= 2.0
 # opacity = 1.0                # (default) range: 0.0 to 1.0, every surface ashell draws
                                # or a table: [appearance.opacity] with default/bar/menu/osd/notifications
@@ -222,7 +251,8 @@ workspace_colors = [ "#7aa2f7", "#9ece6a" ]
 [appearance.bar]
 surface = "transparent"  # (default) or "solid"
 # radius = "none"          # (default) none|sm|md|lg|xl, CSS border-radius shorthand (solid only)
-# margin = "none"          # (default) none|xxs|xs|sm|md|lg|xl|xxl, CSS margin shorthand
+# margin = "none"          # (default) none|xxs|xs|sm|md|lg|xl|xxl|number(pixels), CSS margin shorthand
+# padding = "xxs"         # (default) same values as margin, applied inside the bar
 
 [appearance.menu]
 # backdrop = 0.0   # (default) darkening drawn behind an open menu

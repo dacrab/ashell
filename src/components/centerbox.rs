@@ -1,5 +1,4 @@
 //! Distribute content horizontally.
-use crate::components::ANIMATION_DURATION;
 use iced::Animation;
 use iced::advanced::layout::{self, Layout, Limits, Node};
 use iced::advanced::overlay;
@@ -8,7 +7,7 @@ use iced::advanced::widget::{Operation, Tree, tree};
 use iced::advanced::{Clipboard, Shell, Widget, mouse};
 use iced::animation::Easing;
 use iced::{Alignment, Length, Padding, Pixels, Point, Rectangle, Size, Vector, event};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 type Element<'a, Message, Theme, Renderer> = iced::core::Element<'a, Message, Theme, Renderer>;
 
@@ -138,8 +137,7 @@ where
             .height(self.height)
             .shrink(self.padding);
 
-        // Three children with spacing between each pair.
-        let total_spacing = self.spacing * 2.0;
+        let total_spacing = self.spacing * 3_i32.saturating_sub(1) as f32;
         let max_cross = limits.max().height;
 
         let mut cross = match self.height {
@@ -219,7 +217,7 @@ where
             target_center_x
         } else if !state.initialized {
             state.center_x_anim = Animation::new(target_center_x)
-                .duration(ANIMATION_DURATION)
+                .duration(Duration::from_millis(100))
                 .easing(Easing::EaseOutCubic);
             state.last_center_x = target_center_x;
             state.initialized = true;

@@ -1,21 +1,25 @@
-use super::impl_service_subscription;
-use super::{ReadOnlyService, Service, ServiceEvent};
-use dbus::MprisPlayerProxy;
+use super::{ReadOnlyService, Service, ServiceEvent, compositor};
+use dbus::{MprisPlayerProxy, MprisRootProxy};
 use iced::{
+    Subscription,
     core::Bytes,
     futures::{
         FutureExt, SinkExt, Stream, StreamExt,
         channel::mpsc::Sender,
         future::{BoxFuture, join_all},
         select,
-        stream::{AbortHandle, Abortable, Aborted, FuturesUnordered, SelectAll},
+        stream::{AbortHandle, Abortable, Aborted, FuturesUnordered, SelectAll, pending},
     },
+    stream::channel,
     widget::image,
 };
 use log::{debug, error, info};
-use std::collections::{HashMap, HashSet};
-use std::time::Duration;
-use tokio::time::sleep;
+use std::{
+    any::TypeId,
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    time::Duration,
+};
 use url::Url;
 use zbus::{fdo::DBusProxy, zvariant::OwnedValue};
 
@@ -54,6 +58,18 @@ pub struct MprisPlayerMetadata {
     pub title: Option<String>,
     pub album: Option<String>,
     pub art_url: Option<String>,
+}
+
+impl Display for MprisPlayerMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let t = match (self.artists.clone(), self.title.clone()) {
+            (None, None) => String::new(),
+            (None, Some(t)) => t,
+            (Some(a), None) => a.join(", "),
+            (Some(a), Some(t)) => format!("{} - {}", a.join(", "), t),
+        };
+        write!(f, "{t}")
+    }
 }
 
 impl From<HashMap<String, OwnedValue>> for MprisPlayerMetadata {
@@ -96,7 +112,7 @@ impl MprisPlayerService {
         &self.data
     }
 
-    pub fn cover(&self, url: &str) -> Option<&image::Handle> {
+    pub fn get_cover(&self, url: &str) -> Option<&image::Handle> {
         self.covers.get(url)
     }
 }
@@ -154,13 +170,26 @@ impl ReadOnlyService for MprisPlayerService {
         }
     }
 
-    impl_service_subscription!(MprisPlayerService, 10);
+    fn subscribe() -> Subscription<ServiceEvent<Self>> {
+        Subscription::run_with(TypeId::of::<Self>(), |_| {
+            channel(10, async |mut output| {
+                let mut state = State::Init;
+
+                loop {
+                    state = MprisPlayerService::start_listening(state, &mut output).await;
+                }
+            })
+        })
+    }
 }
 
 const MPRIS_PLAYER_SERVICE_PREFIX: &str = "org.mpris.MediaPlayer2.";
 // playerctld is a proxy that mirrors the currently active player, so it shows
 // up as a duplicate of a real player. Skip it.
 const PLAYERCTLD_SERVICE: &str = "org.mpris.MediaPlayer2.playerctld";
+// How long a player gets to act on `Raise()` (e.g. a browser switching to the
+// tab that plays the media) before the compositor is asked for its windows.
+const RAISE_SETTLE_DELAY: Duration = Duration::from_millis(150);
 
 type CoverDownloadFuture = BoxFuture<'static, Result<(String, anyhow::Result<Bytes>), Aborted>>;
 
@@ -173,13 +202,13 @@ enum DbusEvent {
 impl MprisPlayerService {
     async fn initialize_data(conn: &zbus::Connection) -> anyhow::Result<Vec<MprisPlayerData>> {
         let dbus = DBusProxy::new(conn).await?;
-        let names = Self::player_names(&dbus).await?;
+        let names = Self::get_player_names(&dbus).await?;
         debug!("Found MPRIS player services: {names:?}");
 
-        Ok(Self::mpris_player_data(conn, &names).await)
+        Ok(Self::get_mpris_player_data(conn, &names).await)
     }
 
-    async fn player_names(dbus: &DBusProxy<'_>) -> anyhow::Result<Vec<String>> {
+    async fn get_player_names(dbus: &DBusProxy<'_>) -> anyhow::Result<Vec<String>> {
         let names: Vec<String> = dbus
             .list_names()
             .await?
@@ -193,6 +222,43 @@ impl MprisPlayerService {
             })
             .collect();
         Ok(names)
+    }
+
+    /// `Raise()` alone can't activate the window on Wayland, but browsers handle
+    /// it by switching to the tab that plays the media. So raise first, then let
+    /// the compositor focus the window, picking the one whose title now shows
+    /// the media.
+    async fn focus_player(conn: &zbus::Connection, service_name: &str, title: Option<String>) {
+        // The app id or class of the player's window, for when the window
+        // doesn't report the player's pid (XWayland, sandboxes).
+        let mut apps = Vec::new();
+        match MprisRootProxy::new(conn, service_name.to_string()).await {
+            Ok(proxy) => {
+                let _ = proxy
+                    .raise()
+                    .await
+                    .inspect_err(|e| error!("Raise command error: {e}"));
+                apps.extend(proxy.desktop_entry().await.ok());
+                apps.extend(proxy.identity().await.ok());
+            }
+            Err(e) => error!("Failed to create the MPRIS root proxy for {service_name}: {e}"),
+        }
+
+        let pid = super::connection_pid(conn, service_name)
+            .await
+            .inspect_err(|e| debug!("Could not resolve the pid of {service_name}: {e}"))
+            .ok();
+
+        // Give the player time to switch tab, so the window title is updated
+        // before the compositor is asked for it.
+        if title.is_some() {
+            tokio::time::sleep(RAISE_SETTLE_DELAY).await;
+        }
+
+        match compositor::focus_app_window(pid, apps, title).await {
+            Ok(()) => debug!("Focused {service_name} through the compositor"),
+            Err(e) => debug!("Could not focus {service_name} via the compositor: {e}"),
+        }
     }
 
     async fn create_proxies(
@@ -212,11 +278,17 @@ impl MprisPlayerService {
         proxies
     }
 
-    async fn mpris_player_data(conn: &zbus::Connection, names: &[String]) -> Vec<MprisPlayerData> {
+    async fn get_mpris_player_data(
+        conn: &zbus::Connection,
+        names: &[String],
+    ) -> Vec<MprisPlayerData> {
         let proxies = Self::create_proxies(conn, names).await;
 
         join_all(proxies.into_iter().map(|(name, proxy)| async {
-            let metadata = proxy.metadata().await.ok().map(MprisPlayerMetadata::from);
+            let metadata = proxy
+                .metadata()
+                .await
+                .map_or(None, |m| Some(MprisPlayerMetadata::from(m)));
 
             let volume = proxy.volume().await.map(|v| v * 100.0).ok();
             let state = proxy
@@ -225,16 +297,17 @@ impl MprisPlayerService {
                 .map(PlaybackStatus::from)
                 .unwrap_or_default();
 
-            MprisPlayerData {
+            Some(MprisPlayerData {
                 service: name,
                 metadata,
                 volume,
                 state,
                 proxy,
-            }
+            })
         }))
         .await
         .into_iter()
+        .flatten()
         .filter(|player| player.state != PlaybackStatus::Stopped)
         .collect()
     }
@@ -261,7 +334,7 @@ impl MprisPlayerService {
                 .boxed(),
         );
 
-        let proxies = Self::create_proxies(conn, &Self::player_names(&dbus).await?).await;
+        let proxies = Self::create_proxies(conn, &Self::get_player_names(&dbus).await?).await;
 
         for (_, p) in proxies.iter() {
             combined.push(
@@ -315,11 +388,9 @@ impl MprisPlayerService {
             State::Init => Self::init(output).await,
             State::Active(data) => Self::active(output, data).await,
             State::Error => {
-                error!("MPRIS service error, retrying in 5 seconds");
+                let _ = pending::<u8>().next().await;
 
-                sleep(Duration::from_secs(5)).await;
-
-                State::Init
+                State::Error
             }
         }
     }
@@ -430,8 +501,7 @@ impl MprisPlayerService {
             .filter_map(|p| p.metadata.as_ref()?.art_url.clone())
             .filter(|url| Self::is_valid_art_url(url))
             .collect();
-        // Prune the tracking sets to the still-wanted URLs (the service's
-        // `covers` map is pruned in `update()` on `MetadataChanged`).
+        // These will be removed in `update()`
         state_data
             .fetched_covers
             .retain(|url| desired_urls.contains(url));
@@ -468,35 +538,17 @@ impl MprisPlayerService {
     }
 
     async fn fetch_cover(url: &str) -> anyhow::Result<Bytes> {
-        const MAX_COVER_BYTES: usize = 10 * 1024 * 1024;
-        const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
-
         let url = Url::parse(url)?;
         match url.scheme() {
             "http" | "https" => {
-                let client = reqwest::Client::builder().timeout(FETCH_TIMEOUT).build()?;
-                let response = client.get(url).send().await?;
-                if response
-                    .content_length()
-                    .is_some_and(|len| len as usize > MAX_COVER_BYTES)
-                {
-                    anyhow::bail!("Cover exceeds size cap");
-                }
-                let bytes = response.bytes().await?;
-                if bytes.len() > MAX_COVER_BYTES {
-                    anyhow::bail!("Cover exceeds size cap");
-                }
-                Ok(bytes)
+                let response = reqwest::get(url).await?;
+                Ok(response.bytes().await?)
             }
             "file" => {
                 let path = url
                     .to_file_path()
                     .map_err(|_| anyhow::anyhow!("Invalid file URL {}", url))?;
-                let bytes = tokio::fs::read(path).await?;
-                if bytes.len() > MAX_COVER_BYTES {
-                    anyhow::bail!("Cover exceeds size cap");
-                }
-                Ok(bytes.into())
+                Ok(tokio::fs::read(path).await?.into())
             }
             _ => anyhow::bail!("Unsupported URL scheme: {}", url.scheme()),
         }
@@ -515,6 +567,7 @@ pub enum PlayerCommand {
     PlayPause,
     Next,
     Volume(f64),
+    Raise,
 }
 
 impl Service for MprisPlayerService {
@@ -527,6 +580,8 @@ impl Service for MprisPlayerService {
 
             if let Some(s) = s {
                 let mpris_player_proxy = s.proxy.clone();
+                let service_name = s.service.clone();
+                let title = s.metadata.as_ref().and_then(|m| m.title.clone());
                 let conn = self.conn.clone();
                 iced::Task::perform(
                     async move {
@@ -555,8 +610,11 @@ impl Service for MprisPlayerService {
                                     .await
                                     .inspect_err(|e| error!("Set volume command error: {e}"));
                             }
+                            PlayerCommand::Raise => {
+                                Self::focus_player(&conn, &service_name, title).await;
+                            }
                         }
-                        Event::MetadataChanged(Self::mpris_player_data(&conn, &names).await)
+                        Event::MetadataChanged(Self::get_mpris_player_data(&conn, &names).await)
                     },
                     ServiceEvent::Update,
                 )

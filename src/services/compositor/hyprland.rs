@@ -12,21 +12,32 @@ use hyprland::{
 };
 use itertools::Itertools;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{RwLock, broadcast};
+
+/// Cached result of [`is_lua_config`]. The config provider is fixed when
+/// Hyprland starts, so probing it on every dispatch (a `hyprctl` process per
+/// command) is wasted work.
+static LUA_CONFIG: OnceLock<bool> = OnceLock::new();
 
 /// Detect whether Hyprland is using Lua or hyprlang config.
 /// Checks `hyprctl status` for the `configProvider` field.
 /// Falls back to hyprlang (false) if detection fails.
 async fn is_lua_config() -> bool {
-    tokio::process::Command::new("hyprctl")
+    if let Some(cached) = LUA_CONFIG.get() {
+        return *cached;
+    }
+
+    let detected = tokio::process::Command::new("hyprctl")
         .arg("status")
         .output()
         .await
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.lines().any(|l| l.starts_with("configProvider: lua")))
-        .unwrap_or(false)
+        .unwrap_or(false);
+
+    *LUA_CONFIG.get_or_init(|| detected)
 }
 
 /// Dispatch a command using the old hyprlang socket protocol.

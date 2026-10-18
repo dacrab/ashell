@@ -109,6 +109,13 @@ impl Notification {
     }
 }
 
+/// Upper bound on the tracked revision table.
+///
+/// The UI closes what it displays, but a notification can be discarded without
+/// ever being closed - for example when its application is blocklisted - so
+/// without a cap the table would grow for the lifetime of the process.
+const MAX_TRACKED_REVISIONS: usize = 512;
+
 pub struct NotificationDaemon {
     next_id: u32,
     next_revision: u64,
@@ -126,6 +133,27 @@ impl NotificationDaemon {
             event_tx,
             connection,
         }
+    }
+
+    /// Record the revision for `id`, dropping the oldest entries to stay under
+    /// [`MAX_TRACKED_REVISIONS`]. Evicted ids are simply no longer protected
+    /// against a stale close/replace.
+    fn track_revision(&mut self, id: u32, revision: u64) {
+        if self.revisions.len() >= MAX_TRACKED_REVISIONS {
+            let mut by_age: Vec<(u32, u64)> = self
+                .revisions
+                .iter()
+                .map(|(id, revision)| (*id, *revision))
+                .collect();
+            by_age.sort_unstable_by_key(|(_, revision)| *revision);
+
+            let excess = self.revisions.len() + 1 - MAX_TRACKED_REVISIONS;
+            for (old_id, _) in by_age.into_iter().take(excess) {
+                self.revisions.remove(&old_id);
+            }
+        }
+
+        self.revisions.insert(id, revision);
     }
 }
 
@@ -163,7 +191,7 @@ impl NotificationDaemon {
 
         self.next_revision += 1;
         let revision = self.next_revision;
-        self.revisions.insert(id, revision);
+        self.track_revision(id, revision);
 
         let icon = NotificationIcon::resolve(&app_name, &app_icon, &hints);
         let urgency = Urgency::from_hints(&hints);

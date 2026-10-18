@@ -8,7 +8,7 @@ use iced::{
         channel::mpsc::Sender,
         future::{BoxFuture, join_all},
         select,
-        stream::{AbortHandle, Abortable, Aborted, FuturesUnordered, SelectAll, pending},
+        stream::{AbortHandle, Abortable, Aborted, FuturesUnordered, SelectAll},
     },
     stream::channel,
     widget::image,
@@ -388,9 +388,11 @@ impl MprisPlayerService {
             State::Init => Self::init(output).await,
             State::Active(data) => Self::active(output, data).await,
             State::Error => {
-                let _ = pending::<u8>().next().await;
+                error!("MPRIS service error, retrying in 5 seconds");
 
-                State::Error
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }

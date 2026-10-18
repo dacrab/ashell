@@ -2,7 +2,7 @@ use super::{ReadOnlyService, Service, ServiceEvent};
 use crate::{services::throttle::ThrottleExt, utils::remote_value::Remote};
 use iced::{
     Subscription, Task,
-    futures::{SinkExt, StreamExt, channel::mpsc::Sender, stream::pending},
+    futures::{SinkExt, StreamExt, channel::mpsc::Sender},
     stream::channel,
 };
 use log::{debug, error, info, warn};
@@ -227,10 +227,11 @@ impl BrightnessService {
                 }
             }
             State::Error => {
-                error!("Brightness service error");
+                error!("Brightness service error, retrying in 5 seconds");
 
-                let _ = pending::<u8>().next().await;
-                State::Error
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }

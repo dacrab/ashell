@@ -7,10 +7,7 @@ use dbus::{
 use iced::{
     Subscription, Task,
     futures::{
-        SinkExt, Stream, StreamExt,
-        channel::mpsc::Sender,
-        stream::{pending, select_all},
-        stream_select,
+        SinkExt, Stream, StreamExt, channel::mpsc::Sender, stream::select_all, stream_select,
     },
     stream::channel,
     widget::image,
@@ -537,10 +534,11 @@ impl TrayService {
                 }
             }
             State::Error => {
-                error!("Tray service error");
+                error!("Tray service error, retrying in 5 seconds");
 
-                let _ = pending::<u8>().next().await;
-                State::Error
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }

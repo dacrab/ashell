@@ -917,9 +917,11 @@ impl UPowerService {
                 }
             }
             State::Error => {
-                let _ = pending::<u8>().next().await;
+                error!("UPower service error, retrying in 5 seconds");
 
-                State::Error
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }

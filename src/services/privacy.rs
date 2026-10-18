@@ -244,10 +244,11 @@ impl PrivacyService {
                 State::Active((pipewire, webcam))
             }
             State::Error => {
-                error!("Privacy service error");
+                error!("Privacy service error, retrying in 5 seconds");
 
-                let _ = pending::<u8>().next().await;
-                State::Error
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }

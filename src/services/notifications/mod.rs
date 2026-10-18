@@ -1,6 +1,6 @@
 use crate::services::{ReadOnlyService, ServiceEvent, xdg_icons};
 use iced::Subscription;
-use iced::futures::{SinkExt, StreamExt, channel::mpsc::Sender, stream::pending};
+use iced::futures::{SinkExt, StreamExt, channel::mpsc::Sender};
 use iced::stream::channel;
 use iced::widget::{image, svg};
 use log::{error, info};
@@ -195,9 +195,11 @@ impl NotificationsService {
                 State::Error
             }
             State::Error => {
-                error!("Notifications service error");
-                let _ = pending::<u8>().next().await;
-                State::Error
+                error!("Notifications service error, retrying in 5 seconds");
+
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+                State::Init
             }
         }
     }

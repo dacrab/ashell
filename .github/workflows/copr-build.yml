@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "src/**"
+      - "crates/**"
       - "assets/**"
       - "build.rs"
       - "Cargo.toml"
@@ -31,10 +32,12 @@ jobs:
       COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history so the RPM release can be derived from the commit count.
+          fetch-depth: 0
 
       - name: Install dependencies
         run: |
-          export DEBIAN_FRONTEND=noninteractive
           dnf -y install git cargo rust rpm-build copr-cli gcc make pkgconf-pkg-config \
             pipewire-devel libinput-devel systemd-devel dbus-devel wayland-devel \
             libxkbcommon-devel mesa-libEGL-devel pango-devel cairo-devel glib2-devel \
@@ -54,8 +57,14 @@ jobs:
           # save only on main so dispatch runs restore the shared cache
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Extract version
-        run: echo "VERSION=$(awk -F'\"' '/^version = /{print $2; exit}' Cargo.toml)" >> "$GITHUB_ENV"
+      - name: Extract version and release
+        run: |
+          {
+            echo "VERSION=$(awk -F'\"' '/^version = /{print $2; exit}' Cargo.toml)"
+            # Monotonic release so every push to main produces an upgradable RPM
+            # instead of re-publishing the same NEVRA.
+            echo "RELEASE=$(git rev-list --count HEAD)"
+          } >> "$GITHUB_ENV"
 
       - name: Build release binary
         run: cargo build --release
@@ -64,13 +73,15 @@ jobs:
         run: |
           mkdir -p rpmbuild/SOURCES
           STAGE=/tmp/ashell-${VERSION}
-          rm -rf ${STAGE} && mkdir -p ${STAGE}/usr/bin
+          rm -rf ${STAGE}
+          mkdir -p ${STAGE}/usr/bin ${STAGE}/usr/share/licenses/ashell
           cp -a target/release/ashell ${STAGE}/usr/bin/
+          cp -a LICENSE ${STAGE}/usr/share/licenses/ashell/
           tar -C /tmp -czf rpmbuild/SOURCES/ashell-${VERSION}.tar.gz ashell-${VERSION}
 
       - name: Build SRPM
         run: |
-          sed -i "s/@@VERSION@@/${VERSION}/; s/@@RELEASE@@/1/" .rpm/ashell.spec
+          sed -i "s/@@VERSION@@/${VERSION}/; s/@@RELEASE@@/${RELEASE}/" .rpm/ashell.spec
           rpmbuild -bs \
             --define "_topdir $(pwd)/rpmbuild" \
             --define "_sourcedir $(pwd)/rpmbuild/SOURCES" \

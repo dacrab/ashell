@@ -85,15 +85,10 @@ impl App {
         modules_def
             .iter()
             .flat_map(|module_def| match module_def {
-                ModuleDef::Single(module) => {
-                    vec![self.get_module_subscription(module)]
-                }
-                ModuleDef::Group(group) => group
-                    .iter()
-                    .map(|module| self.get_module_subscription(module))
-                    .collect(),
+                ModuleDef::Single(module) => std::slice::from_ref(module).iter(),
+                ModuleDef::Group(group) => group.iter(),
             })
-            .flatten()
+            .filter_map(|module| self.get_module_subscription(module))
             .collect()
     }
 

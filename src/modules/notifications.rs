@@ -950,7 +950,8 @@ impl Notifications {
     }
 
     fn grouped_notifications<'a>(&'a self) -> Element<'a, Message> {
-        let (space, font_size) = use_theme(|t| (t.space, t.font_size));
+        let (space, font_size, animated) =
+            use_theme(|t| (t.space, t.font_size, t.animations_enabled));
         let mut content = column!()
             .spacing(space.sm)
             .padding(Padding::default().right(space.md).left(space.xs));
@@ -985,23 +986,26 @@ impl Notifications {
 
             let mut count = 1;
             let mut has_critical = first.urgency == Urgency::Critical;
-            let mut group_notifications = vec![];
 
-            if is_expanded {
-                group_notifications.push(self.group_item(first, false));
-                while let Some(notification) = iter.next() {
+            // The rest of the group. Collected whether or not the group is
+            // expanded: the header needs the count and urgency, and the
+            // collapsible below keeps them in the tree so it can tween.
+            let rest: Vec<_> = iter
+                .inspect(|notification| {
                     count += 1;
                     has_critical = has_critical || notification.urgency == Urgency::Critical;
-                    let is_last = iter.peek().is_none();
-                    group_notifications.push(self.group_item(notification, is_last));
-                }
-            } else {
-                for notification in iter {
-                    count += 1;
-                    has_critical = has_critical || notification.urgency == Urgency::Critical;
-                }
-                group_notifications.push(self.group_item(first, true));
-            }
+                })
+                .collect();
+            let rest_len = rest.len();
+            let rest_items = Column::with_children(
+                rest.into_iter()
+                    .enumerate()
+                    .map(|(index, notification)| {
+                        self.group_item(notification, index + 1 == rest_len)
+                    })
+                    .collect::<Vec<Element<'_, _>>>(),
+            )
+            .spacing(space.xxs);
 
             let clear_msg = Message::ClearGroup(app_name.clone());
             let toggle_msg = Message::ToggleGroup(app_name.clone());
@@ -1035,7 +1039,18 @@ impl Notifications {
                         ))
                         .on_press(toggle_msg),
                 )
-                .extend(group_notifications)
+                // The gap between the first notification and the rest lives in
+                // the collapsible, so a collapsed group doesn't leave one behind.
+                .push(
+                    Column::with_capacity(2)
+                        .spacing(0)
+                        .push(self.group_item(first, !is_expanded))
+                        .push(
+                            collapsible(is_expanded, rest_items)
+                                .open_padding_top(space.xxs)
+                                .animated(animated),
+                        ),
+                )
                 .spacing(space.xxs);
 
             content = content.push(item);

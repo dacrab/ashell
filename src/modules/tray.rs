@@ -2,8 +2,8 @@ use crate::{
     components::divider,
     components::icons::{StaticIcon, icon},
     components::{
-        ButtonHierarchy, ButtonKind, ButtonUIRef, IconPosition, MenuSize, position_button,
-        styled_button,
+        ButtonHierarchy, ButtonKind, ButtonUIRef, IconPosition, MenuSize, collapsible,
+        position_button, styled_button,
     },
     components::{scrollable, toggler},
     config::{TrayClickAction, TrayModuleConfig},
@@ -187,7 +187,7 @@ impl TrayModule {
     }
 
     fn menu_voice<'a>(&'a self, name: &'a str, layout: &'a Layout) -> Element<'a, Message> {
-        let space = use_theme(|theme| theme.space);
+        let (space, animated) = use_theme(|theme| (theme.space, theme.animations_enabled));
         match &layout.1 {
             LayoutProps {
                 label: Some(label),
@@ -247,8 +247,9 @@ impl TrayModule {
                             .on_press(Message::ToggleSubmenu(layout.0))
                             .width(Length::Fill),
                     )
-                    .push(if is_open {
-                        Some(
+                    .push(
+                        collapsible(
+                            is_open,
                             Column::with_children(
                                 renderable_children(&layout.2)
                                     .map(|menu| self.menu_voice(name, menu)),
@@ -256,9 +257,8 @@ impl TrayModule {
                             .padding(Padding::default().left(space.md))
                             .spacing(space.xxs),
                         )
-                    } else {
-                        None
-                    })
+                        .animated(animated),
+                    )
                     .into()
             }
             LayoutProps {

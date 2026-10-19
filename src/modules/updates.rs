@@ -3,7 +3,7 @@ use crate::{
     components::icons::{StaticIcon, icon},
     components::scrollable,
     components::spinning_icon::spinning_icon,
-    components::{IconPosition, MenuSize, styled_button},
+    components::{IconPosition, MenuSize, collapsible, styled_button},
     config::UpdatesModuleConfig,
     t,
     theme::use_theme,
@@ -199,7 +199,8 @@ impl Updates {
     }
 
     pub fn menu_view<'a>(&'a self, id: SurfaceId) -> Element<'a, Message> {
-        let (space, font_size) = use_theme(|theme| (theme.space, theme.font_size));
+        let (space, font_size, animated) =
+            use_theme(|theme| (theme.space, theme.font_size, theme.animations_enabled));
         column!(
             if self.updates.is_empty() {
                 Element::from(container(text(t!("updates-up-to-date"))).padding(space.xs))
@@ -217,10 +218,13 @@ impl Updates {
                         .on_press(Message::ToggleUpdatesList)
                         .width(Length::Fill),
                 )
-                .spacing(space.xs);
+                // The gap to the list lives in the collapsible (see below), so
+                // a collapsed list doesn't leave one behind.
+                .spacing(0);
 
-                if self.is_updates_list_open {
-                    elements = elements.push(
+                elements = elements.push(
+                    collapsible(
+                        self.is_updates_list_open,
                         container(
                             scrollable(
                                 Column::with_children(
@@ -258,8 +262,10 @@ impl Updates {
                             .spacing(space.xs),
                         )
                         .max_height(300),
-                    );
-                }
+                    )
+                    .open_padding_top(space.xs)
+                    .animated(animated),
+                );
                 elements.into()
             },
             divider(),

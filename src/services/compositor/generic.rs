@@ -10,7 +10,7 @@ use super::types::{
 use crate::services::ServiceEvent;
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 use tokio::sync::broadcast;
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
@@ -74,7 +74,7 @@ fn event_loop(tx: broadcast::Sender<ServiceEvent<CompositorService>>) -> Result<
     }
 }
 
-pub async fn execute_command(cmd: CompositorCommand) -> Result<()> {
+pub fn execute_command(cmd: CompositorCommand) -> Result<()> {
     match cmd {
         CompositorCommand::FocusWorkspace(id) => {
             activate_workspace(|handles| handles.iter().find(|h| h.numeric_id == id).cloned())
@@ -99,17 +99,14 @@ struct CommandState {
     handles: Vec<WorkspaceHandle>,
 }
 
-fn command_slot() -> &'static Mutex<Option<CommandState>> {
-    static SLOT: OnceLock<Mutex<Option<CommandState>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
-}
+static COMMAND_SLOT: LazyLock<Mutex<Option<CommandState>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Lock the command slot, recovering from a poisoned mutex.
 ///
 /// The slot is touched from both the Wayland listener thread and from async
 /// command dispatch; a panic while it is held must not take down the service.
 fn lock_command_slot() -> std::sync::MutexGuard<'static, Option<CommandState>> {
-    command_slot()
+    COMMAND_SLOT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -329,7 +326,7 @@ impl GenericState {
                     conn: conn.clone(),
                     manager: manager.clone(),
                     handles,
-                })
+                });
             }
         }
     }

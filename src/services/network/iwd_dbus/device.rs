@@ -20,6 +20,14 @@
 use zbus::proxy;
 #[proxy(interface = "net.connman.iwd.Device", assume_defaults = true)]
 pub trait Device {
+    /// Adapter property
+    #[zbus(property)]
+    fn adapter(&self) -> zbus::Result<zbus::OwnedObjectPath>;
+
+    /// Address property
+    #[zbus(property)]
+    fn address(&self) -> zbus::Result<String>;
+
     /// Mode property
     #[zbus(property)]
     fn mode(&self) -> zbus::Result<String>;

@@ -37,6 +37,8 @@ use iced::{
 use log::{debug, info, warn};
 use std::{collections::HashMap, path::PathBuf};
 
+/// OSD surface size in layout pixels; scaled when the layer is created, so the
+/// panel keeps its proportion to the bar.
 const OSD_WIDTH: u32 = 250;
 const OSD_HEIGHT: u32 = 64;
 
@@ -87,7 +89,7 @@ impl App {
     ) -> impl FnOnce() -> (Self, Task<Message>) {
         move || {
             let mut outputs = Outputs::new(
-                BarLayout::from_appearance(&config.appearance.bar),
+                BarLayout::from_appearance(&config.appearance),
                 config.position,
                 config.layer,
                 config.appearance.scale_factor,
@@ -267,7 +269,7 @@ impl App {
                 );
                 let (bar_position, bar_layout, scale_factor) =
                     use_theme(|t| (t.bar_position, t.bar_layout(), t.scale_factor));
-                let new_layout = BarLayout::from_appearance(&config.appearance.bar);
+                let new_layout = BarLayout::from_appearance(&config.appearance);
                 if self.general_config.outputs != config.outputs
                     || bar_position != config.position
                     || bar_layout != new_layout
@@ -553,7 +555,9 @@ impl App {
                 modules::notifications::Action::Show(task) => {
                     let position = self.notifications.toast_position();
                     // Double width gives the card a runway to fully exit on slide-out.
-                    let card_width = crate::components::MenuSize::Medium.size() as u32;
+                    // Must match the scaled width the card is laid out at, or the
+                    // card overflows the surface the toast slides across.
+                    let card_width = crate::components::MenuSize::Medium.width() as u32;
                     let width = card_width * 2;
                     Task::batch(vec![
                         task.map(Message::Notifications),
@@ -620,7 +624,13 @@ impl App {
                         // The layer is destroyed along with the fade-out, so a
                         // re-show inside that window has to create it again.
                         if !self.outputs.has_osd_layer() {
-                            tasks.push(self.outputs.show_osd_layer(OSD_WIDTH, OSD_HEIGHT));
+                            let (width, height) = crate::theme::use_theme(|t| {
+                                (
+                                    t.px(OSD_WIDTH as f32).round() as u32,
+                                    t.px(OSD_HEIGHT as f32).round() as u32,
+                                )
+                            });
+                            tasks.push(self.outputs.show_osd_layer(width, height));
                         }
                     }
                 }

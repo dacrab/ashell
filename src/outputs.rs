@@ -184,10 +184,14 @@ impl Outputs {
         Menu::with_animations(self.animations_enabled)
     }
 
-    /// Surface height: the content height plus the vertical padding, all scaled.
-    /// Padding is rendered inside the surface by iced, so it scales with it.
+    /// Surface height: the content height plus the scaled vertical padding.
+    ///
+    /// `HEIGHT` is content in layout pixels and is *not* scaled here: the iced
+    /// viewport already divides the surface by `scale_factor`, so scaling it
+    /// again would leave the content at its unscaled height in a bar twice as
+    /// tall. Padding is a layer-shell margin, a compositor unit, so it is.
     fn get_height(layout: BarLayout, scale_factor: f64) -> f64 {
-        (HEIGHT + layout.vertical_padding()) * scale_factor
+        HEIGHT + layout.vertical_padding() * scale_factor
     }
 
     /// Space reserved on the anchored edge: the bar height plus the margin that
@@ -1042,5 +1046,32 @@ impl Outputs {
 
     pub fn hide_osd_layer<Message: 'static>(&mut self) -> Task<Message> {
         OverlaySurface::hide(&mut self.osd)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::BarLayout;
+
+    fn layout() -> BarLayout {
+        BarLayout::from_appearance(&config::Appearance::default())
+    }
+
+    #[test]
+    fn bar_height_scales_padding_but_not_content() {
+        // The iced viewport already divides the surface by `scale_factor`, so
+        // content must not be multiplied again; layer-shell margins are
+        // compositor units and must be.
+        let layout = layout();
+        let unscaled = Outputs::get_height(layout, 1.0);
+        let doubled = Outputs::get_height(layout, 2.0);
+
+        assert_eq!(unscaled, HEIGHT + layout.vertical_padding());
+        assert_eq!(
+            doubled,
+            HEIGHT + layout.vertical_padding() * 2.0,
+            "content must stay at its layout size, only padding scales"
+        );
     }
 }

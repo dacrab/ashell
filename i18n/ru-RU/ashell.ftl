@@ -131,6 +131,7 @@ settings-tooltip-empty-battery = Нет информации о батарее
 tempo-feels-like = Ощущается как { $value }{ $unit }
 tempo-humidity = Влажность
 tempo-wind = Ветер
+tempo-location-coordinates = Шир.: { $lat }, Долг.: { $lon }
 
 ## Условие погоды (коды WMO Open-Meteo)
 weather-clear-sky = Ясно

@@ -129,6 +129,7 @@ settings-tooltip-empty-battery = Keine Akku-Informationen
 tempo-feels-like = Gefühlt { $value }{ $unit }
 tempo-humidity = Luftfeuchte
 tempo-wind = Wind
+tempo-location-coordinates = Breite: { $lat }, Länge: { $lon }
 
 ## Wetterbedingungen (Open-Meteo WMO codes)
 weather-clear-sky = Klarer Himmel

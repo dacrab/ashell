@@ -44,6 +44,12 @@ pub fn divider<'a, Msg: 'static>() -> Element<'a, Msg> {
     rule::horizontal(1).style(crate::theme::rule_style).into()
 }
 
+/// Height of a dialog's confirm/cancel row, in layout pixels before
+/// `scale_factor`. Scaled, so the row keeps its weight next to the tile grid.
+pub fn dialog_action_height() -> iced::Length {
+    iced::Length::Fixed(crate::theme::use_theme(|theme| theme.px(50.)))
+}
+
 pub fn scrollable<'a, Message>(
     content: impl Into<Element<'a, Message>>,
 ) -> Scrollable<'a, Message> {

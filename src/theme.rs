@@ -3,8 +3,8 @@ use std::cell::RefCell;
 use crate::{
     components::button::{ButtonHierarchy, ButtonKind},
     config::{
-        Appearance, AppearanceColor, BackgroundLevel, BarAppearance, BarMargin, BarPadding,
-        BarRadius, BarSurface, MenuAppearance, Position, RadiusSize, SpaceSize, Surface,
+        Appearance, AppearanceColor, BackgroundLevel, BarRadius, BarSurface, MenuAppearance,
+        Position, RadiusScale, RadiusSize, ResolvedEdges, SpaceSize, SpacingScale, Surface,
     },
 };
 use iced::{
@@ -30,7 +30,6 @@ pub fn use_theme<R, F: FnOnce(&AshellTheme) -> R>(f: F) -> R {
     THEME.with_borrow(f)
 }
 
-#[allow(unused)]
 #[derive(Debug, Copy, Clone)]
 pub struct Space {
     pub xxs: f32,
@@ -71,7 +70,28 @@ impl Space {
     }
 }
 
-#[allow(unused)]
+impl From<SpacingScale> for Space {
+    fn from(scale: SpacingScale) -> Self {
+        let base = Space::default();
+        let factor = match scale {
+            SpacingScale::Tight => 0.75,
+            SpacingScale::Compact => 0.875,
+            SpacingScale::Default => 1.0,
+            SpacingScale::Comfortable => 1.25,
+            SpacingScale::Spacious => 1.5,
+        };
+        Space {
+            xxs: base.xxs * factor,
+            xs: base.xs * factor,
+            sm: base.sm * factor,
+            md: base.md * factor,
+            lg: base.lg * factor,
+            xl: base.xl * factor,
+            xxl: base.xxl * factor,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Radius {
     pub sm: f32,
@@ -103,22 +123,49 @@ impl Radius {
     }
 }
 
+impl From<RadiusScale> for Radius {
+    fn from(scale: RadiusScale) -> Self {
+        let base = Radius::default();
+        let factor = match scale {
+            RadiusScale::Sharp => 0.0,
+            RadiusScale::Subtle => 0.5,
+            RadiusScale::Default => 1.0,
+            RadiusScale::Rounded => 1.5,
+        };
+        Radius {
+            sm: base.sm * factor,
+            md: base.md * factor,
+            lg: base.lg * factor,
+            xl: base.xl * factor,
+        }
+    }
+}
+
 /// Bar geometry the layer-surface layer needs: which surface mode drives the
 /// bar height, plus the resolved outer margin in logical (unscaled) pixels
 /// ordered `(top, right, bottom, left)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BarLayout {
     pub surface: BarSurface,
-    pub margin: BarMargin,
-    pub padding: BarPadding,
+    pub margin: ResolvedEdges,
+    pub padding: ResolvedEdges,
 }
 
 impl BarLayout {
-    pub fn from_appearance(bar: &BarAppearance) -> Self {
-        Self::new(bar.surface, bar.margin, bar.padding)
+    /// The bar's own margin and padding are written in the same spacing steps
+    /// as everything inside it, so a denser bar has to hug the screen edge more
+    /// tightly too.
+    pub fn from_appearance(appearance: &Appearance) -> Self {
+        let space: Space = appearance.scale.spacing.into();
+        let bar = &appearance.bar;
+        Self::new(
+            bar.surface,
+            bar.margin.resolve(space),
+            bar.padding.resolve(space),
+        )
     }
 
-    fn new(surface: BarSurface, margin: BarMargin, padding: BarPadding) -> Self {
+    fn new(surface: BarSurface, margin: ResolvedEdges, padding: ResolvedEdges) -> Self {
         Self {
             surface,
             margin,
@@ -126,13 +173,13 @@ impl BarLayout {
         }
     }
 
-    /// Padding resolved to logical pixels, as iced renders it.
+    /// Padding as iced renders it.
     pub fn padding(&self) -> iced::Padding {
         iced::Padding {
-            top: self.padding.top.into(),
-            right: self.padding.right.into(),
-            bottom: self.padding.bottom.into(),
-            left: self.padding.left.into(),
+            top: self.padding.top,
+            right: self.padding.right,
+            bottom: self.padding.bottom,
+            left: self.padding.left,
         }
     }
 
@@ -143,9 +190,10 @@ impl BarLayout {
     }
 }
 
-#[allow(unused)]
 #[derive(Debug, Copy, Clone)]
 pub struct FontSize {
+    /// Part of the scale for completeness; no call site uses it yet.
+    #[allow(dead_code)]
     pub xxs: f32,
     pub xs: f32,
     pub sm: f32,
@@ -190,8 +238,8 @@ pub struct AshellTheme {
     pub bar_position: Position,
     pub bar_surface: BarSurface,
     pub bar_radius: BarRadius,
-    pub bar_margin: BarMargin,
-    pub bar_padding: BarPadding,
+    pub bar_margin: ResolvedEdges,
+    pub bar_padding: ResolvedEdges,
     pub menu: MenuAppearance,
     pub workspace_colors: Vec<AppearanceColor>,
     pub special_workspace_colors: Option<Vec<AppearanceColor>>,
@@ -504,8 +552,23 @@ fn build_extended(appearance: &Appearance, palette: Palette) -> palette::Extende
                 .get_strong_pair(text)
                 .unwrap_or(default_danger.strong),
         },
-        is_dark: true,
+        // Picks the direction iced leans on when it derives a variant that
+        // this theme did not resolve itself. A light `background_color` with
+        // `is_dark: true` would darken the variants of a light surface.
+        is_dark: is_dark(background),
     }
+}
+
+/// Whether `color` reads as a dark surface, by relative luminance.
+fn is_dark(color: Color) -> bool {
+    let linear = |c: f32| {
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b) < 0.5
 }
 
 fn build_iced_theme(base: Palette, extended: palette::Extended, opacity: f32) -> Theme {
@@ -527,16 +590,17 @@ fn base_theme_from_appearance(
 ) -> AshellTheme {
     let palette = base_palette(appearance);
     let extended = build_extended(appearance, palette);
+    let space: Space = appearance.scale.spacing.into();
 
     AshellTheme {
-        space: Space::default(),
-        radius: Radius::default(),
+        space,
+        radius: appearance.scale.radius.into(),
         font_size: FontSize::default(),
         bar_position,
         bar_surface: appearance.bar.surface,
         bar_radius: appearance.bar.radius,
-        bar_margin: appearance.bar.margin,
-        bar_padding: appearance.bar.padding,
+        bar_margin: appearance.bar.margin.resolve(space),
+        bar_padding: appearance.bar.padding.resolve(space),
         menu: appearance.menu,
         workspace_colors: appearance.workspace_colors.clone(),
         special_workspace_colors: appearance.special_workspace_colors.clone(),
@@ -565,6 +629,13 @@ impl AshellTheme {
 
     pub fn surface(&self, surface: Surface) -> &SurfaceTheme {
         &self.surfaces[surface as usize]
+    }
+
+    /// `logical` pixels scaled by `scale_factor`, for the fixed sizes written
+    /// straight into widgets (hit boxes, tiles, menu widths, list caps). The
+    /// spacing and radius tokens are already relative and need no scaling.
+    pub fn px(&self, logical: f32) -> f32 {
+        logical * self.scale_factor as f32
     }
 
     pub fn bar_layout(&self) -> BarLayout {
@@ -782,7 +853,9 @@ impl AshellTheme {
         &self,
         active: f32,
     ) -> impl Fn(&Theme, Status) -> button::Style + use<> {
-        let radius = self.radius.xl;
+        // Same corner as the card the tile's sub-menu opens into, so a tile
+        // and its detail read as one family.
+        let radius = self.radius.lg;
         move |theme: &Theme, status: Status| {
             let inactive_bg = Paint::surface(theme, theme.extended_palette().background.weak.color);
             let active_bg = Paint::opaque(theme.extended_palette().primary.base.color);
@@ -1019,5 +1092,85 @@ pub fn lerp_color(from: Color, to: Color, t: f32) -> Color {
         g: from.g + (to.g - from.g) * t,
         b: from.b + (to.b - from.b) * t,
         a: from.a + (to.a - from.a) * t,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dark_background_is_dark() {
+        assert!(is_dark(Color::from_rgb(0.05, 0.05, 0.08)));
+        assert!(is_dark(Color::BLACK));
+    }
+
+    #[test]
+    fn light_background_is_not_dark() {
+        // A light theme must not get dark-derived variants just because the
+        // old code hardcoded it.
+        assert!(!is_dark(Color::WHITE));
+        assert!(!is_dark(Color::from_rgb(0.93, 0.93, 0.90)));
+    }
+
+    #[test]
+    fn px_identity_at_scale_one() {
+        let theme = AshellTheme {
+            scale_factor: 1.0,
+            ..AshellTheme::default()
+        };
+        assert_eq!(theme.px(24.0), 24.0);
+    }
+
+    #[test]
+    fn px_scales_sizes() {
+        let theme = AshellTheme {
+            scale_factor: 2.0,
+            ..AshellTheme::default()
+        };
+        assert_eq!(theme.px(24.0), 48.0);
+        assert_eq!(theme.px(50.0), 100.0);
+    }
+
+    #[test]
+    fn spacing_scale_steps_the_whole_rhythm() {
+        let default: Space = SpacingScale::Default.into();
+        assert_eq!(default.md, 16.0);
+
+        let tight: Space = SpacingScale::Tight.into();
+        let spacious: Space = SpacingScale::Spacious.into();
+
+        // Every step moves together, so the bar stays proportional.
+        for (a, b, c) in [
+            (tight.xxs, default.xxs, spacious.xxs),
+            (tight.xs, default.xs, spacious.xs),
+            (tight.md, default.md, spacious.md),
+            (tight.xxl, default.xxl, spacious.xxl),
+        ] {
+            assert!(a < b && b < c, "{a} < {b} < {c}");
+        }
+    }
+
+    #[test]
+    fn sharp_radius_is_actually_square() {
+        assert_eq!(Radius::from(RadiusScale::Sharp).lg, 0.0);
+        assert_eq!(Radius::from(RadiusScale::Default).lg, 16.0);
+    }
+
+    #[test]
+    fn scale_reaches_the_resolved_theme() {
+        let mut appearance = Appearance::default();
+        appearance.scale.spacing = SpacingScale::Tight;
+        appearance.scale.radius = RadiusScale::Sharp;
+        let theme = AshellTheme::new(
+            Position::Top,
+            &appearance,
+            &crate::config::AnimationsConfig::default(),
+        );
+
+        assert_eq!(theme.space.md, 12.0);
+        assert_eq!(theme.radius.lg, 0.0);
+        // The bar's own padding scales with the same steps.
+        assert_eq!(theme.bar_layout().padding().top, 3.0);
     }
 }

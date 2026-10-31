@@ -129,6 +129,11 @@ pub enum SubMenu {
     Bluetooth,
 }
 
+/// Widest a tooltip may get, in layout pixels before `scale_factor`. Wide
+/// enough for a full device name, narrow enough to never approach a screen
+/// edge on its own.
+const TOOLTIP_MAX_WIDTH: f32 = 320.;
+
 impl Settings {
     pub fn audio(&self) -> &AudioSettings {
         &self.audio
@@ -985,7 +990,16 @@ impl Settings {
         ])
     }
 
+    /// A tooltip's body. Capped and clipped: the strings here are device and
+    /// app names of unbounded length, and a tooltip wider than its indicator
+    /// is what pushes a menu past the screen edge.
     pub fn tooltip_view<'a>(&'a self, menu_type: &MenuType) -> Element<'a, Message> {
+        let width = use_theme(|t| t.px(TOOLTIP_MAX_WIDTH));
+        let body: Element<'a, Message> = self.tooltip_body(menu_type);
+        container(body).max_width(width).clip(true).into()
+    }
+
+    fn tooltip_body<'a>(&'a self, menu_type: &MenuType) -> Element<'a, Message> {
         let (space, font_size) = use_theme(|t| (t.space, t.font_size));
         let fallback = |label: String| -> Element<'a, Message> { iced::widget::text(label).into() };
         match menu_type {

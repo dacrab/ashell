@@ -265,7 +265,7 @@ impl Tempo {
             timezones,
         )
         .spacing(theme.space.lg)
-        .width(225)
+        .width(theme.px(225.))
         .into()
     }
 }

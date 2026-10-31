@@ -212,7 +212,7 @@ impl Tempo {
                         )
                         .horizontal()
                     )
-                    .padding(space.sm)
+                    .padding(space.md)
                     .style(crate::theme::card_style(radius.lg)),
                     Column::with_children(
                         izip!(
@@ -422,7 +422,14 @@ pub async fn fetch_location(location: &WeatherLocation, lang: &str) -> anyhow::R
         WeatherLocation::Coordinates(lat, lon) => {
             let (city, region_name) = match try_reverse_geocode(&client, *lat, *lon, lang).await {
                 Ok(Some((city, region))) => (city, region),
-                _ => (format!("Lat: {}, Lon: {}", lat, lon), String::new()),
+                _ => (
+                    t!(
+                        "tempo-location-coordinates",
+                        lat = lat.to_string(),
+                        lon = lon.to_string()
+                    ),
+                    String::new(),
+                ),
             };
 
             Ok(Location {

@@ -22,10 +22,33 @@ use iced::{
 };
 use log::debug;
 
+/// Height cap of a tray menu in layout pixels, before `scale_factor`.
 const MENU_MAX_HEIGHT: f32 = 600.;
 
 fn is_separator(layout: &Layout) -> bool {
     layout.1.type_.as_deref() == Some("separator")
+}
+
+/// Drops GTK mnemonic markers so "Save _As" reads as "Save As", matching what
+/// a tray app would render itself: a `_` before a character marks it, a
+/// doubled `__` is the escape for a literal underscore, and a trailing marker
+/// has nothing to mark, so it is dropped too.
+fn strip_mnemonics(label: &str) -> String {
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '_' {
+            out.push(c);
+            continue;
+        }
+        // A marker before a character, or a trailing one, both just disappear;
+        // only a doubled `__` survives, as one literal underscore.
+        if chars.peek() == Some(&'_') {
+            chars.next();
+            out.push('_');
+        }
+    }
+    out
 }
 
 fn is_visible(layout: &Layout) -> bool {
@@ -210,7 +233,7 @@ impl TrayModule {
                 ..
             } if toggle_type == "checkmark" => {
                 let content: Element<'a, Message> = toggler(*state > 0)
-                    .label(label.replace("_", "").to_owned())
+                    .label(strip_mnemonics(label))
                     .on_toggle({
                         let name = name.to_owned();
                         let id = layout.0;
@@ -240,11 +263,11 @@ impl TrayModule {
 
                             move |_| Message::MenuToggled(name.to_owned(), id)
                         }))
-                        .push(text(label.replace("_", "")))
+                        .push(text(strip_mnemonics(label)))
                         .spacing(space.sm)
                         .align_y(Alignment::Center)
                         .into(),
-                    _ => text(label.replace("_", "")).into(),
+                    _ => text(strip_mnemonics(label)).into(),
                 };
                 Column::with_capacity(2)
                     .push(
@@ -276,7 +299,7 @@ impl TrayModule {
             }
             LayoutProps {
                 label: Some(label), ..
-            } if !label.is_empty() => styled_button(label.replace("_", ""))
+            } if !label.is_empty() => styled_button(strip_mnemonics(label))
                 .on_press(Message::MenuSelected(name.to_owned(), layout.0))
                 .width(Length::Fill)
                 .into(),
@@ -286,11 +309,14 @@ impl TrayModule {
     }
 
     pub fn view<'a>(&'a self, id: SurfaceId) -> Option<Element<'a, Message>> {
-        let (space, font_size, button_style) = use_theme(|theme| {
+        let (space, button_style, image_icon, svg_icon) = use_theme(|theme| {
             (
                 theme.space,
-                theme.font_size,
                 theme.button_style(ButtonKind::Transparent, ButtonHierarchy::Secondary),
+                // An image tray icon is drawn edge to edge, an SVG leaves a
+                // hairline for its own stroke, so they are not the same box.
+                theme.px(theme.font_size.md - 2.0),
+                theme.px(theme.font_size.md + 2.0),
             )
         });
         let button_style = std::sync::Arc::new(button_style);
@@ -315,12 +341,12 @@ impl TrayModule {
                                 };
                                 let icon_content: Element<'_, Message> = match active_icon {
                                     Some(TrayIcon::Image(handle)) => Image::new(handle.clone())
-                                        .height(Length::Fixed(font_size.md - 2.0))
+                                        .height(Length::Fixed(image_icon))
                                         .into(),
                                     Some(TrayIcon::Svg { handle, symbolic }) => {
                                         let svg = Svg::new(handle.clone())
-                                            .height(Length::Fixed(font_size.md + 2.))
-                                            .width(Length::Fixed(font_size.md + 2.))
+                                            .height(Length::Fixed(svg_icon))
+                                            .width(Length::Fixed(svg_icon))
                                             .content_fit(iced::ContentFit::Cover);
                                         // Symbolic icons ship a fixed dark fill and
                                         // expect the host to recolor them.
@@ -376,7 +402,7 @@ impl TrayModule {
 
         container(scrollable(items).spacing(space.xs))
             .width(MenuSize::Medium)
-            .max_height(MENU_MAX_HEIGHT)
+            .max_height(use_theme(|t| t.px(MENU_MAX_HEIGHT)))
             .into()
     }
 
@@ -387,7 +413,7 @@ impl TrayModule {
 
 #[cfg(test)]
 mod tests {
-    use super::{TrayModule, is_separator, is_visible, renderable_children};
+    use super::{TrayModule, is_separator, is_visible, renderable_children, strip_mnemonics};
     use crate::config::{RegexCfg, TrayModuleConfig};
     use crate::services::tray::dbus::{Layout, LayoutProps};
 
@@ -404,6 +430,20 @@ mod tests {
             },
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn mnemonics_are_stripped_without_eating_literal_underscores() {
+        assert_eq!(strip_mnemonics("Save _As"), "Save As");
+        assert_eq!(strip_mnemonics("_File"), "File");
+        // `__` is the escape for a literal underscore, as in GTK.
+        assert_eq!(strip_mnemonics("my__app"), "my_app");
+        assert_eq!(strip_mnemonics("__x"), "_x");
+        // A single underscore marks the next character, even mid-word, and a
+        // trailing marker has nothing to mark: both are dropped, matching GTK.
+        assert_eq!(strip_mnemonics("my_app"), "myapp");
+        assert_eq!(strip_mnemonics("value_"), "value");
+        assert_eq!(strip_mnemonics("plain"), "plain");
     }
 
     #[test]

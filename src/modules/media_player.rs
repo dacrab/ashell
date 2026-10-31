@@ -345,6 +345,14 @@ impl MediaPlayer {
     pub fn menu_view<'a>(&'a self, is_closing: bool) -> Element<'a, Message> {
         let (space, font_size, radius, palette) =
             use_theme(|theme| (theme.space, theme.font_size, theme.radius, theme.palette));
+        // The menu visualizer is a canvas, so it needs scaled pixels too.
+        let (bar_min_width, bar_gap, bg_max_width) = use_theme(|theme| {
+            (
+                theme.px(VISUALIZER_BAR_MIN_WIDTH),
+                theme.px(VISUALIZER_BAR_GAP),
+                theme.px(VISUALIZER_BG_BAR_MAX_WIDTH),
+            )
+        });
         container(match &self.service {
             None => Into::<Element<'a, Message>>::into(text(t!("media-player-not-connected"))),
             Some(service) => column!(
@@ -485,9 +493,9 @@ impl MediaPlayer {
                                         high: palette.danger,
                                         opacity: 0.1,
                                         radius: radius.lg,
-                                        min_bar_width: VISUALIZER_BAR_MIN_WIDTH,
-                                        max_bar_width: VISUALIZER_BG_BAR_MAX_WIDTH,
-                                        gap: VISUALIZER_BAR_GAP,
+                                        min_bar_width: bar_min_width,
+                                        max_bar_width: bg_max_width,
+                                        gap: bar_gap,
                                         inset: 0.0,
                                     })
                                     .width(Length::Fill)
@@ -504,7 +512,7 @@ impl MediaPlayer {
                     }))
                     .spacing(space.md)
                 ))
-                .max_height(600)
+                .max_height(use_theme(|t| t.px(600.)))
             )
             .spacing(space.xs)
             .into(),
@@ -592,6 +600,19 @@ impl MediaPlayer {
     pub fn view(&'_ self) -> Option<Element<'_, Message>> {
         let (space, font_size, palette) =
             use_theme(|theme| (theme.space, theme.font_size, theme.palette));
+        // Visualizer geometry is drawn on a canvas, so it has to be scaled by
+        // hand: the canvas gets bare pixels, not themed tokens.
+        let (bar_min_width, bar_gap, beside_width, beside_max_width, bg_max_width, bg_min_width) =
+            use_theme(|theme| {
+                (
+                    theme.px(VISUALIZER_BAR_MIN_WIDTH),
+                    theme.px(VISUALIZER_BAR_GAP),
+                    theme.px(VISUALIZER_BESIDE_WIDTH),
+                    theme.px(VISUALIZER_BESIDE_BAR_MAX_WIDTH),
+                    theme.px(VISUALIZER_BG_BAR_MAX_WIDTH),
+                    theme.px(VISUALIZER_BG_MIN_WIDTH),
+                )
+            });
         self.active_player().map(|player| {
             let has_text = self.config.indicator_format != MediaPlayerFormat::Icon;
             let label = || {
@@ -623,15 +644,15 @@ impl MediaPlayer {
                         high: palette.danger,
                         opacity: 1.0,
                         radius: 0.0,
-                        min_bar_width: VISUALIZER_BAR_MIN_WIDTH,
-                        max_bar_width: VISUALIZER_BESIDE_BAR_MAX_WIDTH,
-                        gap: VISUALIZER_BAR_GAP,
+                        min_bar_width: bar_min_width,
+                        max_bar_width: beside_max_width,
+                        gap: bar_gap,
                         inset: 0.0,
                     })
                     .width(Length::Fill)
                     .height(Length::Fill),
                 )
-                .width(Length::Fixed(VISUALIZER_BESIDE_WIDTH))
+                .width(Length::Fixed(beside_width))
                 .padding(space.xxs)
             };
 
@@ -641,7 +662,7 @@ impl MediaPlayer {
                         content.into()
                     } else {
                         container(icon(StaticIcon::MusicNote))
-                            .center_x(Length::Fixed(VISUALIZER_BG_MIN_WIDTH))
+                            .center_x(Length::Fixed(bg_min_width))
                             .center_y(Length::Fill)
                             .into()
                     };
@@ -655,9 +676,9 @@ impl MediaPlayer {
                                 high: palette.danger,
                                 opacity: 0.1,
                                 radius: 0.0,
-                                min_bar_width: VISUALIZER_BAR_MIN_WIDTH,
-                                max_bar_width: VISUALIZER_BG_BAR_MAX_WIDTH,
-                                gap: VISUALIZER_BAR_GAP,
+                                min_bar_width: bar_min_width,
+                                max_bar_width: bg_max_width,
+                                gap: bar_gap,
                                 inset: space.xxs,
                             })
                             .width(Length::Fill)

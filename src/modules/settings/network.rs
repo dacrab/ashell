@@ -5,7 +5,7 @@ use crate::{
         icons::{StaticIcon, icon, icon_button},
         quick_setting_button, scrollable,
         spinning_icon::spinning_icon,
-        styled_button, toggler,
+        styled_button,
     },
     config::SettingsFormat,
     services::{
@@ -705,7 +705,7 @@ impl NetworkSettings {
                 })
                 .spacing(space.xxs)
             ).spacing(space.xs))
-            .max_height(200),
+            .max_height(use_theme(|t| t.px(200.))),
         )
         .spacing(space.xs);
 
@@ -760,7 +760,7 @@ impl NetworkSettings {
 
                     row!(
                         text(vpn.name.to_string()).width(Length::Fill),
-                        toggler(is_active)
+                        crate::components::toggler(is_active)
                             .on_toggle(|_| { Message::ToggleVpn(vpn.clone()) })
                             .width(Length::Shrink),
                     )
@@ -773,7 +773,7 @@ impl NetworkSettings {
 
         let main = container(scrollable(vpn_list))
             .height(Length::Shrink)
-            .max_height(300);
+            .max_height(use_theme(|t| t.px(300.)));
 
         if show_more_button {
             column!(
@@ -836,7 +836,10 @@ impl NetworkSettings {
             } else if active_vpns.len() == 1 {
                 Some(active_vpns[0].clone())
             } else {
-                Some(format!("{} VPNs connected", active_vpns.len()))
+                Some(t!(
+                    "settings-network-vpns-connected",
+                    count = active_vpns.len()
+                ))
             }
         })
     }

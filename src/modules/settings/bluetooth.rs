@@ -312,7 +312,7 @@ impl BluetoothSettings {
                                 ))
                                 .spacing(theme.space.xs)
                             )
-                            .max_height(150),
+                            .max_height(theme.px(150.)),
                         )
                         .spacing(theme.space.xs),
                     )
@@ -352,7 +352,7 @@ impl BluetoothSettings {
                                 )
                                 .spacing(theme.space.xs)
                             )
-                            .max_height(150),
+                            .max_height(theme.px(150.)),
                         )
                         .spacing(theme.space.xs),
                     )

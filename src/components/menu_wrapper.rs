@@ -19,6 +19,10 @@ const SETTLED_EPSILON: f32 = 0.001;
 /// How far the content travels while opening. Small values read as the menu
 /// landing rather than flying in from the bar.
 const REVEAL_DISTANCE: f32 = 8.0;
+/// Minimum gap between a menu and the screen edge. Separate from
+/// `REVEAL_DISTANCE` even though the values match: one is animation travel,
+/// this one is placement.
+const SCREEN_INSET: f32 = 8.0;
 
 struct State {
     /// Horizontal position of the menu, in window coordinates.
@@ -241,8 +245,15 @@ where
 
         let display_x = state.animate(self.x, self.open, self.duration, self.animated, now);
 
+        // Menus are sized in fixed pixels by `MenuSize`, and the widest
+        // (`XLarge`, 650) can exceed a narrow or heavily scaled output. Cap
+        // them to the surface here, where every menu passes through, so a
+        // fixed width can never exceed the space the compositor gave us.
+        let available = (limits.max().width - 2. * SCREEN_INSET).max(0.);
+        let limits = limits.max_width(available).loose();
+
         let node = layout::positioned(
-            limits,
+            &limits,
             Length::Fill,
             Length::Fill,
             self.padding,
@@ -253,9 +264,12 @@ where
             },
             |node, size| {
                 let content_size = node.size();
-                let x = f32::min(
-                    f32::max(display_x - content_size.width / 2.0, 8.),
-                    size.width - content_size.width - 8.,
+                // Centre on the button, then hold `SCREEN_INSET` inside both
+                // edges. The content was already capped to the available width
+                // above, so the right-edge bound can't fall below the left.
+                let x = (display_x - content_size.width / 2.).clamp(
+                    SCREEN_INSET,
+                    (size.width - content_size.width - SCREEN_INSET).max(0.),
                 );
                 let node = node.align(
                     iced::Alignment::Center,

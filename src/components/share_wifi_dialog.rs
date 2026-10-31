@@ -107,7 +107,7 @@ pub fn view<'a>(
             iced::widget::space::horizontal(),
             styled_button(t!("share-wifi-close"))
                 .kind(ButtonKind::Outline)
-                .height(Length::Fixed(50.))
+                .height(crate::components::dialog_action_height())
                 .on_press(Message::Close),
         )
         .width(Length::Fill),

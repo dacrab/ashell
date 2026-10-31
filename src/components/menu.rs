@@ -283,6 +283,7 @@ pub enum MenuSize {
 }
 
 impl MenuSize {
+    /// Width in layout pixels, before the theme's `scale_factor`.
     pub fn size(&self) -> f32 {
         match self {
             MenuSize::Small => 250.,
@@ -291,17 +292,22 @@ impl MenuSize {
             MenuSize::XLarge => 650.,
         }
     }
+
+    /// The width as laid out, so a menu keeps its proportion to the bar.
+    pub fn width(&self) -> f32 {
+        use_theme(|theme| theme.px(self.size()))
+    }
 }
 
 impl From<MenuSize> for Length {
     fn from(value: MenuSize) -> Self {
-        Length::Fixed(value.size())
+        Length::Fixed(value.width())
     }
 }
 
 impl From<MenuSize> for Pixels {
     fn from(value: MenuSize) -> Self {
-        Pixels::from(value.size())
+        Pixels::from(value.width())
     }
 }
 

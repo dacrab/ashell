@@ -341,7 +341,7 @@ fn workspace_button<'a>(
     let inner: Element<'a, Message> = if icons.is_empty() {
         text(name).size(font_size).into()
     } else {
-        let icon_size = font_size + 4.0;
+        let icon_size = theme.px(font_size + 4.0);
         let children: Vec<Element<'a, Message>> =
             std::iter::once(text(name).size(font_size).into())
                 .chain(icons.into_iter().map(|i| {

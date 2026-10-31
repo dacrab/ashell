@@ -257,7 +257,7 @@ impl Updates {
                             )
                             .spacing(space.xs),
                         )
-                        .max_height(300),
+                        .max_height(use_theme(|t| t.px(300.))),
                     );
                 }
                 elements.into()

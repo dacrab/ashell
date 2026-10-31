@@ -456,12 +456,23 @@ impl<'a, I: Icon, Message: 'static + Clone> From<IconButton<'a, I, Message>>
 {
     #[inline]
     fn from(value: IconButton<'a, I, Message>) -> Self {
-        let (theme_font_size, radius) = use_theme(|theme| (theme.font_size, theme.radius));
+        // A full round would make a 24px hit box a dot, so the corner follows
+        // the same kind-based radius as `button_style`.
+        let (theme_font_size, radius) = use_theme(|theme| {
+            (
+                theme.font_size,
+                match value.kind {
+                    ButtonKind::Transparent => theme.radius.sm,
+                    ButtonKind::Solid | ButtonKind::Outline => theme.radius.lg,
+                },
+            )
+        });
+        let px = |logical: f32| use_theme(|theme| theme.px(logical));
 
         let (container_size, font_size) = match value.size {
-            ButtonSize::Small => (24., theme_font_size.xs),
-            ButtonSize::Medium => (32., theme_font_size.xs),
-            ButtonSize::Large => (38., theme_font_size.sm),
+            ButtonSize::Small => (px(24.), theme_font_size.xs),
+            ButtonSize::Medium => (px(32.), theme_font_size.xs),
+            ButtonSize::Large => (px(38.), theme_font_size.sm),
         };
 
         let style: StyleFn<'a, Theme> = match value.style_override {
@@ -470,7 +481,7 @@ impl<'a, I: Icon, Message: 'static + Clone> From<IconButton<'a, I, Message>>
                 let base = use_theme(|theme| theme.button_style(value.kind, value.hierarchy));
                 Box::new(move |theme: &Theme, status: Status| {
                     let mut s = base(theme, status);
-                    s.border.radius = radius.xl.into();
+                    s.border.radius = radius.into();
                     s
                 })
             }

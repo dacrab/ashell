@@ -32,19 +32,20 @@ use std::{
 };
 use zbus::Connection;
 
+/// App icon in a notification card, in layout pixels before `scale_factor`.
 const ICON_SIZE: f32 = 36.0;
 
-fn notification_icon<'a, M: 'a>(icon_kind: Option<&NotificationIcon>) -> Element<'a, M> {
+fn notification_icon<'a, M: 'a>(icon_kind: Option<&NotificationIcon>, size: f32) -> Element<'a, M> {
     match icon_kind {
         Some(NotificationIcon::Svg(handle)) => svg(handle.clone())
-            .width(Length::Fixed(ICON_SIZE))
-            .height(Length::Fixed(ICON_SIZE))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
             .into(),
         Some(NotificationIcon::Image(handle)) => image(handle.clone())
-            .width(Length::Fixed(ICON_SIZE))
-            .height(Length::Fixed(ICON_SIZE))
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
             .into(),
-        None => icon(StaticIcon::Bell).size(ICON_SIZE).into(),
+        None => icon(StaticIcon::Bell).size(size).into(),
     }
 }
 
@@ -747,9 +748,12 @@ impl Notifications {
         datetime.format(&self.config.format).to_string()
     }
 
+    /// A notification card, painted with `fill` instead of the default card
+    /// surface when given one.
     fn notification_button_style(
         style: NotificationStyle,
         urgency: Urgency,
+        fill: Option<Paint>,
     ) -> impl Fn(&Theme, iced::widget::button::Status) -> iced::widget::button::Style + use<> {
         let radius = use_theme(|t| t.radius);
         move |iced_theme: &Theme, status| {
@@ -781,14 +785,16 @@ impl Notifications {
                 border,
                 ..iced::widget::button::Style::default()
             };
-            let bg = Paint::surface(
-                iced_theme,
-                if style == NotificationStyle::Toast {
-                    iced_theme.extended_palette().background.base.color
-                } else {
-                    iced_theme.extended_palette().background.weak.color
-                },
-            );
+            let bg = fill.unwrap_or_else(|| {
+                Paint::surface(
+                    iced_theme,
+                    if style == NotificationStyle::Toast {
+                        iced_theme.extended_palette().background.base.color
+                    } else {
+                        iced_theme.extended_palette().background.weak.color
+                    },
+                )
+            });
             button_style.background = Some(
                 if matches!(status, iced::widget::button::Status::Hovered) {
                     bg.hovered(iced_theme)
@@ -816,6 +822,7 @@ impl Notifications {
         toast: bool,
     ) -> Element<'a, Message> {
         let (space, font_size) = use_theme(|t| (t.space, t.font_size));
+        let icon_size = use_theme(|t| t.px(ICON_SIZE));
         let timestamp_element = if self.config.show_timestamps {
             Some(
                 container(text(self.format_timestamp(notification.timestamp)).size(font_size.xs))
@@ -837,7 +844,7 @@ impl Notifications {
 
         let notification_id = notification.id;
 
-        let app_icon_button = notification_icon(notification.icon.as_ref());
+        let app_icon_button = notification_icon(notification.icon.as_ref(), icon_size);
 
         let mut card = container(
             column!(
@@ -885,7 +892,7 @@ impl Notifications {
             .map(|countdown| {
                 countdown_bar(
                     countdown,
-                    COUNTDOWN_BAR_HEIGHT,
+                    use_theme(|t| t.px(COUNTDOWN_BAR_HEIGHT)),
                     use_theme(|t| t.palette.primary),
                 )
             });
@@ -901,6 +908,7 @@ impl Notifications {
                     NotificationStyle::Standalone
                 },
                 notification.urgency,
+                None,
             ))
             .into()
     }
@@ -931,7 +939,16 @@ impl Notifications {
         notification: &'a Notification,
         is_last: bool,
     ) -> Element<'a, Message> {
-        let (space, font_size) = use_theme(|t| (t.space, t.font_size));
+        let (space, font_size, item_fill) = use_theme(|t| {
+            let theme = &t.surface(Surface::Menu).iced_theme;
+            (
+                t.space,
+                t.font_size,
+                // Same fill as the header above, so the run reads as one card
+                // instead of a lighter rectangle glowing through each item.
+                Paint::surface(theme, theme.extended_palette().background.weak.color),
+            )
+        });
         button(
             column!(
                 row!(
@@ -953,6 +970,7 @@ impl Notifications {
                 NotificationStyle::GroupItem
             },
             notification.urgency,
+            Some(item_fill),
         ))
         .on_press(Message::NotificationClicked(notification.id))
         .into()
@@ -1009,7 +1027,7 @@ impl Notifications {
                 .push((!is_empty).then(|| {
                     icon_button(StaticIcon::Delete).on_press(Message::ClearNotifications)
                 })),
-            container(scrollable(content).spacing(space.xs)).max_height(400.),
+            container(scrollable(content).spacing(space.xs)).max_height(use_theme(|t| t.px(400.))),
         )
         .width(MenuSize::Medium)
         .spacing(space.sm)
@@ -1028,7 +1046,8 @@ impl Notifications {
             ToastPosition::TopCenter => SlideDirection::Up,
             ToastPosition::BottomCenter => SlideDirection::Down,
         };
-        let card_width = MenuSize::Medium.size();
+        // Scaled, matching how the card itself is laid out.
+        let card_width = MenuSize::Medium.width();
         // A toast is alone on its surface, so it publishes its own blur region.
         let (blur_enabled, card_radius) =
             use_theme(|t| (t.surface(Surface::Notifications).blur, t.radius.lg));
@@ -1133,7 +1152,8 @@ impl Notifications {
             // Multiple notifications — use the group layout.
             let app_name = first.app_name.clone();
             let is_expanded = self.expanded_groups.contains(&app_name);
-            let app_icon = notification_icon(first.icon.as_ref());
+            let icon_size = use_theme(|t| t.px(ICON_SIZE));
+            let app_icon = notification_icon(first.icon.as_ref(), icon_size);
 
             let mut count = 1;
             let mut has_critical = first.urgency == Urgency::Critical;
@@ -1184,6 +1204,7 @@ impl Notifications {
                             } else {
                                 Urgency::Normal
                             },
+                            None,
                         ))
                         .on_press(toggle_msg),
                 )

@@ -67,7 +67,10 @@ impl<'a, Msg: 'static + Clone> SliderControl<'a, Msg> {
 
 impl<'a, Msg: 'static + Clone> From<SliderControl<'a, Msg>> for Element<'a, Msg> {
     fn from(ctrl: SliderControl<'a, Msg>) -> Self {
-        let space = use_theme(|theme| theme.space);
+        let (space, scale_factor) = use_theme(|theme| (theme.space, theme.scale_factor));
+        // Same box as a medium icon button, so the muted and pressable icons
+        // line up down a column.
+        let icon_box = 32. * scale_factor as f32;
 
         let icon_element: Element<'a, Msg> = if let Some(msg) = ctrl.on_icon_press {
             let btn = icon_button(ctrl.icon.clone()).on_press(msg);
@@ -78,8 +81,8 @@ impl<'a, Msg: 'static + Clone> From<SliderControl<'a, Msg>> for Element<'a, Msg>
             }
         } else {
             iced::widget::container(ctrl.icon.to_text_mono())
-                .center_x(32.)
-                .center_y(32.)
+                .center_x(icon_box)
+                .center_y(icon_box)
                 .clip(true)
                 .into()
         };

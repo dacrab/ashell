@@ -18,6 +18,11 @@ use crate::{
 };
 use ashell_i18n::t;
 
+/// OSD level bar, in layout pixels before `scale_factor`: long enough that a
+/// 5% step is visibly distinct.
+const OSD_BAR_LENGTH: f32 = 160.0;
+const OSD_BAR_GIRTH: f32 = 8.0;
+
 pub struct Osd {
     config: OsdConfig,
     state: Option<OsdState>,
@@ -222,9 +227,11 @@ impl Osd {
 
         let detail: Element<'_, Message> = match state.kind {
             OsdKind::Volume | OsdKind::Microphone | OsdKind::Brightness => {
+                let (bar_length, bar_girth) =
+                    use_theme(|t| (t.px(OSD_BAR_LENGTH), t.px(OSD_BAR_GIRTH)));
                 let bar = progress_bar(0.0..=state.scale, state.value)
-                    .length(160.0)
-                    .girth(8.0);
+                    .length(bar_length)
+                    .girth(bar_girth);
                 let style = if state.muted {
                     crate::theme::progress_bar_secondary
                 } else if overdrive {

@@ -111,7 +111,6 @@ impl Config {
             .padding
             .validate("appearance.bar.padding");
         self.appearance.bar.border.validate("appearance.bar.border");
-        self.appearance.modules.validate(&self.custom_modules);
         self.system_info.validate();
         self.tempo.validate();
         self.settings.validate();
@@ -1071,11 +1070,11 @@ pub enum SpaceSize {
     Xxl,
 }
 
-#[derive(Deserialize, Copy, Clone, PartialEq, Debug)]
+#[derive(Deserialize, Copy, Clone, Eq, PartialEq, Debug)]
 #[serde(untagged)]
 pub enum MarginSize {
     SpaceSize(SpaceSize),
-    Pixels(f32),
+    Pixels(Pixels),
 }
 
 impl Default for MarginSize {
@@ -1090,13 +1089,54 @@ fn is_valid_length(length: f32) -> bool {
     length.is_finite() && length >= 0.0
 }
 
+/// Lengths stored in resolved pixels rather than a step of the spacing scale,
+/// so they carry no dependency on `[appearance.scale]`. `custom`, `resolve`
+/// and `deserialize` are the only door into it, which keeps fixed pixels out
+/// of the size tokens.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Pixels(i32);
+
+impl Pixels {
+    /// Rounds to whole pixels: a bar sits on a device grid, and a fractional
+    /// margin is rounded by the compositor anyway.
+    pub fn custom(value: f32) -> Self {
+        Self(value.round() as i32)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Pixels {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        f32::deserialize(deserializer).map(Pixels::custom)
+    }
+}
+
+impl From<Pixels> for f32 {
+    fn from(value: Pixels) -> Self {
+        value.0 as f32
+    }
+}
+
 impl MarginSize {
     fn validate(&mut self, field: &str, edge: &str) {
         if let MarginSize::Pixels(pixels) = *self
-            && !is_valid_length(pixels)
+            && !is_valid_length(f32::from(pixels))
         {
-            warn!("{field} {edge} ({pixels}) is not a valid length, using 0");
-            *self = MarginSize::Pixels(0.0);
+            warn!(
+                "{field} {edge} ({}) is not a valid length, using 0",
+                f32::from(pixels)
+            );
+            *self = MarginSize::Pixels(Pixels::custom(0.0));
+        }
+    }
+}
+
+impl MarginSize {
+    /// The edge in logical pixels, with a spacing step resolved against the
+    /// configured scale.
+    pub fn resolve(self, space: crate::theme::Space) -> f32 {
+        match self {
+            MarginSize::SpaceSize(size) => space.resolve(size),
+            MarginSize::Pixels(pixels) => pixels.into(),
         }
     }
 }
@@ -1105,7 +1145,7 @@ impl From<MarginSize> for f32 {
     fn from(value: MarginSize) -> Self {
         match value {
             MarginSize::SpaceSize(space_size) => Space::default().resolve(space_size),
-            MarginSize::Pixels(pixels) => pixels,
+            MarginSize::Pixels(pixels) => pixels.into(),
         }
     }
 }
@@ -1114,7 +1154,7 @@ impl From<MarginSize> for i32 {
     fn from(value: MarginSize) -> Self {
         match value {
             MarginSize::SpaceSize(space_size) => Space::default().resolve(space_size) as i32,
-            MarginSize::Pixels(pixels) => pixels as i32,
+            MarginSize::Pixels(pixels) => pixels.0,
         }
     }
 }
@@ -1195,6 +1235,15 @@ impl BarMargin {
         self.bottom.validate(field, "bottom");
         self.left.validate(field, "left");
     }
+
+    pub fn resolve(self, space: crate::theme::Space) -> ResolvedEdges {
+        ResolvedEdges {
+            top: self.top.resolve(space),
+            right: self.right.resolve(space),
+            bottom: self.bottom.resolve(space),
+            left: self.left.resolve(space),
+        }
+    }
 }
 
 impl From<BarMargin> for (i32, i32, i32, i32) {
@@ -1240,6 +1289,37 @@ impl BarPadding {
         self.right.validate(field, "right");
         self.bottom.validate(field, "bottom");
         self.left.validate(field, "left");
+    }
+
+    pub fn resolve(self, space: crate::theme::Space) -> ResolvedEdges {
+        ResolvedEdges {
+            top: self.top.resolve(space),
+            right: self.right.resolve(space),
+            bottom: self.bottom.resolve(space),
+            left: self.left.resolve(space),
+        }
+    }
+}
+
+/// Per-edge lengths already resolved to logical pixels. A margin is a
+/// layer-shell unit the compositor needs as an integer, so it converts through
+/// `i32`; a padding stays inside the surface and stays fractional.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct ResolvedEdges {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl From<ResolvedEdges> for (i32, i32, i32, i32) {
+    fn from(value: ResolvedEdges) -> Self {
+        (
+            value.top.round() as i32,
+            value.right.round() as i32,
+            value.bottom.round() as i32,
+            value.left.round() as i32,
+        )
     }
 }
 
@@ -1334,179 +1414,6 @@ impl Border {
     }
 }
 
-/// How a module's elements are wrapped in islands.
-#[derive(Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Grouping {
-    /// One island around all of the module's elements.
-    #[default]
-    Combined,
-    /// One island per element.
-    Individual,
-    /// No island.
-    None,
-}
-
-#[derive(Deserialize, Copy, Clone, PartialEq, Eq, Debug)]
-#[serde(rename_all = "lowercase")]
-pub enum FontSizeScale {
-    Xxs,
-    Xs,
-    Sm,
-    Md,
-    Lg,
-    Xl,
-    Xxl,
-}
-
-/// `appearance.modules.default`: the style of every module island.
-#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]
-pub struct ModuleDefaultStyle {
-    pub radius: Option<BarRadius>,
-    pub padding: Option<BarPadding>,
-    pub border: Option<Border>,
-    pub background: Option<ColorRef>,
-    pub grouping: Option<Grouping>,
-}
-
-/// `appearance.modules.group`: the style of the islands of module groups.
-#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]
-pub struct GroupStyle {
-    pub radius: Option<BarRadius>,
-    pub padding: Option<BarPadding>,
-    pub border: Option<Border>,
-    pub background: Option<ColorRef>,
-    pub spacing: Option<MarginSize>,
-}
-
-/// `appearance.modules.<module>`: per-module overrides.
-#[derive(Deserialize, Clone, Copy, Debug, Default, PartialEq)]
-pub struct ModuleStyle {
-    pub radius: Option<BarRadius>,
-    pub padding: Option<BarPadding>,
-    pub border: Option<Border>,
-    pub background: Option<ColorRef>,
-    pub grouping: Option<Grouping>,
-    pub spacing: Option<MarginSize>,
-    pub text_color: Option<ColorRef>,
-    pub font_size: Option<FontSizeScale>,
-}
-
-/// The `[appearance.modules]` table: the reserved `default` and `group` keys,
-/// builtin modules by their section name (`system_info`), and custom modules
-/// under `custom` by their `name`.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct ModulesAppearance {
-    pub default: ModuleDefaultStyle,
-    pub group: GroupStyle,
-    pub overrides: HashMap<ModuleName, ModuleStyle>,
-}
-
-impl<'de> Deserialize<'de> for ModulesAppearance {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct ModulesAppearanceVisitor;
-
-        impl<'de> Visitor<'de> for ModulesAppearanceVisitor {
-            type Value = ModulesAppearance;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a table of module styles")
-            }
-
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut modules = ModulesAppearance::default();
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "default" => modules.default = map.next_value()?,
-                        "group" => modules.group = map.next_value()?,
-                        "custom" => {
-                            let custom: HashMap<String, ModuleStyle> = map.next_value()?;
-                            modules.overrides.extend(
-                                custom
-                                    .into_iter()
-                                    .map(|(name, style)| (ModuleName::Custom(name), style)),
-                            );
-                        }
-                        key => {
-                            let name = ModuleName::from_section(key)
-                                .ok_or_else(|| de::Error::custom(unknown_module(key)))?;
-                            modules.overrides.insert(name, map.next_value()?);
-                        }
-                    }
-                }
-                Ok(modules)
-            }
-        }
-
-        deserializer.deserialize_map(ModulesAppearanceVisitor)
-    }
-}
-
-impl ModulesAppearance {
-    fn validate(&mut self, custom_modules: &[CustomModuleDef]) {
-        let default = &mut self.default;
-        validate_style(
-            "appearance.modules.default",
-            &mut default.border,
-            &mut default.padding,
-            None,
-        );
-        let group = &mut self.group;
-        validate_style(
-            "appearance.modules.group",
-            &mut group.border,
-            &mut group.padding,
-            group.spacing.as_mut(),
-        );
-        for (name, style) in &mut self.overrides {
-            validate_style(
-                &format!("appearance.modules.{}", name.style_key()),
-                &mut style.border,
-                &mut style.padding,
-                style.spacing.as_mut(),
-            );
-        }
-
-        for name in self.overrides.keys() {
-            if let ModuleName::Custom(name) = name
-                && !custom_modules.iter().any(|module| module.name == *name)
-            {
-                warn!(
-                    "[appearance.modules.custom.{name}] doesn't match any [[CustomModule]], its style is unused"
-                );
-            }
-        }
-    }
-}
-
-fn unknown_module(key: &str) -> String {
-    match BUILTIN_MODULES.iter().find(|(layout, _, _)| *layout == key) {
-        Some((_, section, _)) => {
-            format!("unknown module `{key}` in [appearance.modules], use `{section}`")
-        }
-        None => format!(
-            "unknown module `{key}` in [appearance.modules], expected a builtin module like `system_info`, or `custom.{key}` for a custom module"
-        ),
-    }
-}
-
-fn validate_style(
-    field: &str,
-    border: &mut Option<Border>,
-    padding: &mut Option<BarPadding>,
-    spacing: Option<&mut MarginSize>,
-) {
-    if let Some(border) = border {
-        border.validate(&format!("{field}.border"));
-    }
-    if let Some(padding) = padding {
-        padding.validate(&format!("{field}.padding"));
-    }
-    if let Some(spacing) = spacing {
-        spacing.validate(field, "spacing");
-    }
-}
-
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 #[serde(default)]
 pub struct BarAppearance {
@@ -1539,6 +1446,49 @@ impl Default for BarAppearance {
 #[serde(default)]
 pub struct MenuAppearance {
     pub backdrop: f32,
+}
+
+/// `[appearance.scale]`: named steps for the two size scales every module draws
+/// from. Named rather than raw numbers because the value that matters is the
+/// whole rhythm, not one gap: a config that hand-tunes a single padding is how
+/// a bar starts to feel assembled from parts.
+#[derive(Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct ScaleAppearance {
+    pub spacing: SpacingScale,
+    pub radius: RadiusScale,
+}
+
+/// How tightly elements sit together. Steps the whole `Space` scale.
+#[derive(Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SpacingScale {
+    /// 3/6/9/12/18/24/36: fits many modules on a narrow bar.
+    Tight,
+    /// 3.5/7/10.5/14/21/28/42: a quarter below the default.
+    Compact,
+    #[default]
+    /// 4/8/12/16/24/32/48.
+    Default,
+    /// 5/10/15/20/30/40/60: a quarter above the default.
+    Comfortable,
+    /// 6/12/18/24/36/48/72: a touch-friendly bar.
+    Spacious,
+}
+
+/// How soft the corners are. Steps the whole `Radius` scale.
+#[derive(Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RadiusScale {
+    /// Square everywhere.
+    Sharp,
+    /// 2/4/8/16: slightly rounded.
+    Subtle,
+    #[default]
+    /// 4/8/16/32.
+    Default,
+    /// 6/12/24/48: noticeably round.
+    Rounded,
 }
 
 /// A layer-shell surface. Each one is drawn with its own theme.
@@ -1658,7 +1608,7 @@ pub struct Appearance {
     pub opacity: Opacity,
     pub bar: BarAppearance,
     pub menu: MenuAppearance,
-    pub modules: ModulesAppearance,
+    pub scale: ScaleAppearance,
     pub background_color: BackgroundAppearanceColor,
     pub primary_color: AppearanceColor,
     pub success_color: AppearanceColor,
@@ -1772,7 +1722,7 @@ impl Default for Appearance {
             opacity: Opacity::default(),
             bar: BarAppearance::default(),
             menu: MenuAppearance::default(),
-            modules: ModulesAppearance::default(),
+            scale: ScaleAppearance::default(),
             background_color: BackgroundAppearanceColor::Complete {
                 base: HexColor::rgb(26, 27, 38),
                 weakest: None,
@@ -1832,7 +1782,7 @@ pub enum ModuleName {
 }
 
 /// Each builtin module's layout name and its snake_case name, used for its
-/// settings section and its `[appearance.modules]` key.
+/// settings section.
 const BUILTIN_MODULES: [(&str, &str, ModuleName); 12] = [
     ("Updates", "updates", ModuleName::Updates),
     ("Workspaces", "workspaces", ModuleName::Workspaces),
@@ -1856,43 +1806,18 @@ const BUILTIN_MODULES: [(&str, &str, ModuleName); 12] = [
     ("MediaPlayer", "media_player", ModuleName::MediaPlayer),
 ];
 
-impl ModuleName {
-    fn builtin(&self) -> Option<&'static (&'static str, &'static str, ModuleName)> {
-        BUILTIN_MODULES.iter().find(|(_, _, module)| module == self)
-    }
-
-    fn from_section(section: &str) -> Option<Self> {
-        BUILTIN_MODULES
-            .iter()
-            .find(|(_, name, _)| *name == section)
-            .map(|(_, _, module)| module.clone())
-    }
-
-    /// The key of the module's table in `[appearance.modules]`.
-    fn style_key(&self) -> String {
-        match self {
-            ModuleName::Custom(name) => format!("custom.{name}"),
-            builtin => builtin
-                .builtin()
-                .expect("every builtin module has a name")
-                .1
-                .to_owned(),
-        }
-    }
-}
-
 impl std::fmt::Display for ModuleName {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let name = match self {
-            ModuleName::Custom(name) => name,
-            builtin => {
-                builtin
-                    .builtin()
-                    .expect("every builtin module has a name")
-                    .0
-            }
-        };
-        f.write_str(name)
+        match self {
+            ModuleName::Custom(name) => f.write_str(name),
+            builtin => f.write_str(
+                BUILTIN_MODULES
+                    .iter()
+                    .find(|(_, _, module)| module == builtin)
+                    .expect("every builtin module is listed")
+                    .0,
+            ),
+        }
     }
 }
 
@@ -2355,100 +2280,49 @@ mod tests {
         })
     }
 
-    fn ignored_fields(toml: &str) -> Vec<String> {
-        let mut ignored = Vec::new();
-        let _: Config =
-            serde_ignored::deserialize(toml::Deserializer::parse(toml).unwrap(), |path| {
-                ignored.push(path.to_string())
-            })
-            .unwrap();
-        ignored
-    }
-
     const BACKGROUND_STRONG: ColorRef =
         ColorRef::Palette(PaletteColor::Background(Some(BackgroundLevel::Strong)));
+
+    #[test]
+    fn scale_defaults_change_nothing() {
+        let appearance = parse("").unwrap().appearance;
+        assert_eq!(appearance.scale, ScaleAppearance::default());
+        assert_eq!(appearance.scale.spacing, SpacingScale::Default);
+        assert_eq!(appearance.scale.radius, RadiusScale::Default);
+    }
+
+    #[test]
+    fn parses_scale_names() {
+        let scale = parse("[appearance.scale]\nspacing = \"compact\"\nradius = \"rounded\"")
+            .unwrap()
+            .appearance
+            .scale;
+        assert_eq!(scale.spacing, SpacingScale::Compact);
+        assert_eq!(scale.radius, RadiusScale::Rounded);
+    }
+
+    #[test]
+    fn rejects_unknown_scale_names() {
+        // A typo must not silently fall back to the default rhythm.
+        assert!(parse("[appearance.scale]\nspacing = \"tightest\"").is_err());
+        assert!(parse("[appearance.scale]\nradius = \"pill\"").is_err());
+    }
+
+    #[test]
+    fn margin_pixels_still_parse() {
+        use crate::config::Pixels;
+        let bar = parse("[appearance.bar]\nmargin = 8")
+            .unwrap()
+            .appearance
+            .bar;
+        assert_eq!(bar.margin.top, MarginSize::Pixels(Pixels::custom(8.0)));
+    }
 
     #[test]
     fn style_defaults_keep_current_look() {
         let appearance = parse("").unwrap().appearance;
         assert_eq!(appearance.bar.border.width, 0.0);
         assert_eq!(appearance.bar.border.color, BACKGROUND_STRONG);
-        assert_eq!(appearance.modules, ModulesAppearance::default());
-    }
-
-    #[test]
-    fn parses_issue_example() {
-        let modules = parse(
-            r##"
-            [appearance.bar]
-            border = { width = 1, color = "background.strong" }
-
-            [appearance.modules.default]
-            radius = "lg"
-            padding = "none"
-            border = { width = 1, color = "background.strong" }
-            background = "background"
-            grouping = "combined"
-
-            [appearance.modules.group]
-            radius = "md"
-            padding = "xxs"
-            border = { width = 1, color = "primary" }
-            background = "background.weak"
-            spacing = "xs"
-
-            [appearance.modules.system_info]
-            grouping = "individual"
-            spacing = "xs"
-            radius = "md"
-            border = { width = 1, color = "#414868" }
-            text_color = "primary"
-
-            [appearance.modules.workspaces]
-            font_size = "sm"
-
-            [appearance.modules.custom.my_custom_module]
-            font_size = "lg"
-            "##,
-        )
-        .unwrap()
-        .appearance
-        .modules;
-
-        assert_eq!(modules.default.grouping, Some(Grouping::Combined));
-        assert_eq!(
-            modules.default.background,
-            Some(ColorRef::Palette(PaletteColor::Background(None)))
-        );
-        assert_eq!(
-            modules.group.border.unwrap().color,
-            ColorRef::Palette(PaletteColor::Primary(Shade::Base))
-        );
-        assert_eq!(
-            modules.group.spacing,
-            Some(MarginSize::SpaceSize(SpaceSize::Xs))
-        );
-
-        let system_info = modules.overrides[&ModuleName::SystemInfo];
-        assert_eq!(system_info.grouping, Some(Grouping::Individual));
-        assert_eq!(
-            system_info.border.unwrap().color,
-            ColorRef::Hex(HexColor::rgb(0x41, 0x48, 0x68))
-        );
-        assert_eq!(
-            system_info.text_color,
-            Some(ColorRef::Palette(PaletteColor::Primary(Shade::Base)))
-        );
-        assert_eq!(system_info.font_size, None);
-
-        assert_eq!(
-            modules.overrides[&ModuleName::Workspaces].font_size,
-            Some(FontSizeScale::Sm)
-        );
-        assert_eq!(
-            modules.overrides[&ModuleName::Custom("my_custom_module".into())].font_size,
-            Some(FontSizeScale::Lg)
-        );
     }
 
     #[test]
@@ -2463,11 +2337,11 @@ mod tests {
 
     #[test]
     fn negative_border_width_falls_back_to_zero() {
-        let modules = parse("[appearance.modules.default]\nborder = { width = -1 }")
+        let bar = parse("[appearance.bar]\nborder = { width = -1 }")
             .unwrap()
             .appearance
-            .modules;
-        assert_eq!(modules.default.border.unwrap().width, 0.0);
+            .bar;
+        assert_eq!(bar.border.width, 0.0);
     }
 
     #[test]
@@ -2512,81 +2386,9 @@ mod tests {
             "text.weak",
             "#zzzzzz",
         ] {
-            let toml = format!("[appearance.modules.default]\nbackground = \"{color}\"");
+            let toml = format!("[appearance.bar]\nborder = {{ color = \"{color}\" }}");
             assert!(parse(&toml).is_err(), "{color} should be rejected");
         }
-    }
-
-    #[test]
-    fn rejects_unknown_grouping_and_font_size() {
-        assert!(parse("[appearance.modules.default]\ngrouping = \"all\"").is_err());
-        assert!(parse("[appearance.modules.tray]\nfont_size = \"huge\"").is_err());
-    }
-
-    #[test]
-    fn module_overrides_use_section_names() {
-        let error = |toml: &str| parse(toml).unwrap_err().message().to_owned();
-
-        assert_eq!(
-            error("[appearance.modules.SystemInfo]"),
-            "unknown module `SystemInfo` in [appearance.modules], use `system_info`"
-        );
-        assert!(error("[appearance.modules.my_module]").contains("`custom.my_module`"));
-    }
-
-    #[test]
-    fn custom_overrides_stay_apart_from_builtins() {
-        let modules = parse(
-            r#"
-            [appearance.modules.tray]
-            font_size = "sm"
-
-            [appearance.modules.custom.tray]
-            font_size = "lg"
-
-            [appearance.modules.custom.default]
-            font_size = "xs"
-            "#,
-        )
-        .unwrap()
-        .appearance
-        .modules;
-
-        assert_eq!(
-            modules.overrides[&ModuleName::Tray].font_size,
-            Some(FontSizeScale::Sm)
-        );
-        assert_eq!(
-            modules.overrides[&ModuleName::Custom("tray".into())].font_size,
-            Some(FontSizeScale::Lg)
-        );
-        assert_eq!(
-            modules.overrides[&ModuleName::Custom("default".into())].font_size,
-            Some(FontSizeScale::Xs)
-        );
-        assert_eq!(modules.default, ModuleDefaultStyle::default());
-    }
-
-    #[test]
-    fn reports_options_outside_their_table() {
-        let ignored = ignored_fields(
-            r#"
-            [appearance.modules.default]
-            font_size = "sm"
-            spacing = "xs"
-
-            [appearance.modules.group]
-            grouping = "none"
-            "#,
-        );
-        assert_eq!(
-            ignored,
-            [
-                "appearance.modules.default.font_size",
-                "appearance.modules.default.spacing",
-                "appearance.modules.group.grouping",
-            ]
-        );
     }
 
     #[test]

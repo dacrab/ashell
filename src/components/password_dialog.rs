@@ -7,7 +7,7 @@ use ashell_i18n::t;
 use iced::{
     Alignment, Element, Length, SurfaceId,
     id::Id,
-    widget::{column, row, space, text, text_input, toggler},
+    widget::{column, row, space, text, text_input},
 };
 
 pub const PASSWORD_INPUT_ID: Id = Id::new("network-password-input");
@@ -86,7 +86,7 @@ pub fn view<'a>(
         (warning_only && show_connect_once).then_some(
             row!(
                 text(t!("password-dialog-connect-once")).width(Length::Fill),
-                toggler(connect_once)
+                crate::components::toggler(connect_once)
                     .on_toggle(Message::ConnectOnceToggled)
                     .width(Length::Shrink),
             )
@@ -99,12 +99,12 @@ pub fn view<'a>(
             space::horizontal(),
             styled_button(t!("password-dialog-cancel"))
                 .kind(ButtonKind::Outline)
-                .height(Length::Fixed(50.))
+                .height(crate::components::dialog_action_height())
                 .on_press(Message::DialogCancelled(id)),
             styled_button(t!("password-dialog-confirm"))
                 .kind(ButtonKind::Solid)
                 .hierarchy(ButtonHierarchy::Primary)
-                .height(Length::Fixed(50.))
+                .height(crate::components::dialog_action_height())
                 .on_press_maybe(if !warning_only && current_password.is_empty() {
                     None
                 } else {

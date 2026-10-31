@@ -67,7 +67,7 @@ the same at any opacity.
 
 ```rust
 pub struct Space {
-    pub xxs: f32,  // 4px
+    pub xxs: f32,  // 4px at the default step
     pub xs: f32,   // 8px
     pub sm: f32,   // 12px
     pub md: f32,   // 16px
@@ -77,16 +77,25 @@ pub struct Space {
 }
 ```
 
+The values above are one *step* of the spacing scale, not fixed pixels.
+`[appearance.scale] spacing` (`tight`, `compact`, `default`, `comfortable`,
+`spacious`) scales all seven together, and `Space::from(SpacingScale)` is how
+the theme resolves them. Widgets read `theme.space.*` and therefore follow the
+configured step for free.
+
 ### Border Radius
 
 ```rust
 pub struct Radius {
-    pub sm: f32,   // 4px
+    pub sm: f32,   // 4px at the default step
     pub md: f32,   // 8px
     pub lg: f32,   // 16px
     pub xl: f32,   // 32px
 }
 ```
+
+Same idea: `[appearance.scale] radius` (`sharp`, `subtle`, `default`,
+`rounded`) steps all four, with `sharp` collapsing everything to `0`.
 
 ### Font Sizes
 
@@ -109,7 +118,7 @@ The `[appearance.bar].surface` field controls where the background is painted:
 - **`transparent`**: No continuous background. Each module (or module group) gets its own rounded container with the background color, creating a "floating islands" look. This is the default.
 - **`solid`**: Flat background color across the entire bar width; module groups render pass-through so the bar reads as a single surface.
 
-The bar surface can additionally be rounded (`radius`) and inset from the screen edges (`margin`); both use CSS shorthand over the radius/spacing scales. Additionally, margin can be an `f32` representing physical pixels. Margins are applied by the compositor outside the bar surface, so they are always screen pixels and are not multiplied by `scale_factor`. `padding` uses the same shorthand to inset the bar content without moving the surface, so a solid bar keeps its full-width background; being drawn inside the bar it does scale with `scale_factor`.
+The bar surface can additionally be rounded (`radius`) and inset from the screen edges (`margin`); both use CSS shorthand over the radius/spacing scales. Additionally, margin and padding accept a fixed pixel value (`Pixels`, an `i32` newtype so a fractional length cannot slip in at a call site). Spacing steps resolve against the configured `[appearance.scale] spacing` step, including the bar's own margin and padding, so a denser bar does not float inside a loose frame. Margins are applied by the compositor outside the bar surface, so they are always screen pixels and are not multiplied by `scale_factor`. `padding` uses the same shorthand to inset the bar content without moving the surface, so a solid bar keeps its full-width background; being drawn inside the bar it does scale with `scale_factor`.
 
 ## Color System
 
@@ -164,8 +173,8 @@ impl AshellTheme {
 fn base_theme_from_appearance(appearance: &Appearance, bar_position: Position, animations_enabled: bool) -> AshellTheme {
     AshellTheme {
         surfaces: Surface::ALL.map(/* one theme per surface */),
-        space: Space::default(),
-        radius: Radius::default(),
+        space: appearance.scale.spacing.into(),
+        radius: appearance.scale.radius.into(),
         font_size: FontSize::default(),
         bar_position,
         bar_surface: appearance.bar.surface,

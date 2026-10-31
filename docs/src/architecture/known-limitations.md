@@ -42,9 +42,11 @@ This chapter documents known architectural limitations and design tradeoffs. Und
 
 ## Minimal Test Suite
 
-**Issue**: The project only has a handful of unit tests (in `app.rs`, `services/compositor/hyprland.rs`, `services/upower.rs` and the `ashell-services` crate), and CI only runs the `ashell-services` tests. The UI is tested manually, and services are verified by running ashell on real hardware.
+**Issue**: CI only runs the `ashell-services` tests (`cargo test -p ashell-services --all-features`), even though the root crate has ~90 unit tests of its own across `config.rs`, `theme.rs`, `outputs.rs`, the tray and notification services, and others. Those tests run locally via `cargo test --workspace` but never gate a pull request. The UI is tested manually, and services are verified by running ashell on real hardware.
 
-**Impact**: Regressions can slip through, especially for compositor-specific behavior (Hyprland vs. Niri) or hardware-specific features (brightness, Bluetooth).
+**Impact**: Regressions can slip through, especially for compositor-specific behavior (Hyprland vs. Niri) or hardware-specific features (brightness, Bluetooth). Root-crate tests can rot without anyone noticing, since nothing runs them in CI.
+
+**Fix**: add `cargo test --workspace` to CI (and to the `check` target in the `Makefile`, which mirrors it).
 
 ## NVIDIA Compatibility
 
@@ -61,3 +63,41 @@ This chapter documents known architectural limitations and design tradeoffs. Und
 **Impact**: Newly installed applications and runtime icon-theme changes are not picked up until ashell is restarted. This affects both the tray and the workspace window icons.
 
 **Why not fixed**: Because the indexes are static within a session, invalidating the result cache alone changes nothing (re-resolution reads the same frozen data), and dropping negative cache entries would only re-run the expensive fuzzy scans on every event for the same result. A proper fix means making the indexes rebuildable (a periodic or event-driven refresh), which is disproportionate to the payoff for a status bar.
+
+## Menu Overlay Edge Cases
+
+**Issue**: `MenuWrapper` positions menus by centring them on their button and
+clamping to the screen edge. Two problems hid here: the width was never bounded
+by the output, and the clamp itself inverted once content exceeded the viewport
+(selecting the negative right-edge bound and pushing the menu off the left).
+
+**Fixed**: the layout limits are now capped to `viewport - 2 * SCREEN_INSET`, so
+no menu or tooltip can be laid out wider than the surface, and placement only
+has to centre.
+
+**Still open**: tooltips are capped and clipped at `TOOLTIP_MAX_WIDTH` rather
+than wrapped, so an over-long SSID or device name is truncated instead of
+reflowed. They also still share menus' card styling and differ only in
+animation duration, so a tooltip and a popover look alike.
+
+## Notification Group Disclosure
+
+**Issue**: A notification group's header reads `expanded_groups` and renders
+the right items for each state, but shows no chevron or other indicator. The
+item count is identical collapsed and expanded, so the two states are visually
+indistinguishable and click-to-expand is undiscoverable. Every other expandable
+surface in the bar (sub-menus, tray sub-menus) uses a chevron.
+
+**Why not fixed**: it needs a decision on where the chevron goes relative to
+the clear button, and it belongs with the quick-settings menu work tracked in
+[Quick-settings menu](settings-menu-design.md).
+
+## Power Panel Padding
+
+**Issue**: The power panel applies its own `padding(space.xs)` inside a menu
+that already insets by `space.md`. Every other list relies on the shell's inset,
+so the power panel's rows sit 8px from the menu edge where the battery panel's
+sit 16px.
+
+**Why not fixed**: purely visual, and the correct inset depends on whether
+nested cards are kept (see [Quick-settings menu](settings-menu-design.md)).

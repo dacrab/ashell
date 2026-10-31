@@ -3,7 +3,7 @@
 ## Quick reference
 
 ```bash
-make check    # fmt + cargo check + clippy -D warnings + tests across the workspace (run before pushing)
+make check    # fmt + cargo check + clippy -D warnings + ashell-services tests (mirrors CI; run before pushing)
 make build    # cargo build --release
 make fmt      # cargo fmt
 make start    # run ./target/release/ashell

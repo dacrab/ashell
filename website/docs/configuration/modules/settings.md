@@ -4,7 +4,7 @@ sidebar_position: 7
 
 # Settings
 
-This module provides access to system settings like audio, network, bluetooth,  
+This module provides access to system settings like audio, network, bluetooth,
 battery, power profile and idle inhibitor.
 
 It displays in the status bar indicators about:
@@ -48,12 +48,12 @@ system battery and a driver that counts them. To hide them, see
 
 You can configure this module.
 
-With the `lock_cmd` option you can set a command to lock  
+With the `lock_cmd` option you can set a command to lock
 the system, if not set the related button will not appear.
 
 With the `shutdown_cmd`, `suspend_cmd`, `reboot_cmd`, and `logout_cmd`,
 you can change the related commands to
-shut down, suspend, reboot, or log out of the system.  
+shut down, suspend, reboot, or log out of the system.
 These parameters are optional and have the following default values:
 
 ```toml
@@ -67,9 +67,9 @@ The `lock_cmd` parameter is optional. If not set, or set to an empty string, the
 
 The `hibernate_cmd` parameter is optional. If not set, or set to an empty string, the hibernate button will not appear.
 
-With the `audio_sinks_more_cmd` and `audio_sources_more_cmd`  
-options you can set commands to open the audio settings  
-for sinks and sources, if not set the related buttons will not appear.  
+With the `audio_sinks_more_cmd` and `audio_sources_more_cmd`
+options you can set commands to open the audio settings
+for sinks and sources, if not set the related buttons will not appear.
 When configured, right-clicking the speaker or microphone indicators (or their quick settings buttons) launches the respective command immediately.
 
 With the `audio_sink_post_switch_cmd` and `audio_source_post_switch_cmd` options
@@ -86,8 +86,8 @@ device instead (for example an output with nothing connected), the command is no
 audio_sink_post_switch_cmd = "systemctl --user restart wireplumber"
 ```
 
-With the `wifi_more_cmd`, `vpn_more_cmd` and `bluetooth_more_cmd` options  
-you can set commands to open the network, VPN and bluetooth settings.  
+With the `wifi_more_cmd`, `vpn_more_cmd` and `bluetooth_more_cmd` options
+you can set commands to open the network, VPN and bluetooth settings.
 Right-clicking the Wi-Fi, VPN, Bluetooth or airplane-mode quick settings buttons (and the Wi-Fi indicator in the bar) triggers these commands directly when they are set.
 
 Optional command fields in this module treat empty or whitespace-only strings as unset.
@@ -503,7 +503,7 @@ tooltip = "Open Terminal"
 In the following example we use:
 
 - `hyprlock` to lock the screen
-- `pavucontrol` to open the audio settings for sinks and sources  
+- `pavucontrol` to open the audio settings for sinks and sources
   directly in the correct tab.
 - `nm-connection-editor` to open the wifi and VPN settings
 - `blueman-manager` to open the bluetooth settings
@@ -528,7 +528,6 @@ indicators = ["Battery", "Bluetooth", "Network", "Audio", "Microphone", "Brightn
 battery_format = "IconAndTime"
 peripheral_battery_format = "Time"
 peripheral_indicators = "All"
-
 
 [[settings.CustomButton]]
 name = "Virtual Keyboard"

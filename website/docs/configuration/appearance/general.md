@@ -82,10 +82,49 @@ You can change the scaling factor of the status bar using the `scale_factor` fie
 The value should be a float greater than `0.0` and less than or equal to `2.0`.
 The default value is `1.0`.
 
+The factor scales the bar and everything laid out inside it: icon hit boxes,
+menu widths, quick-settings tiles, list caps and the OSD. Spacing and radius
+tokens are already relative and are not scaled again.
+
 ```toml
 [appearance]
 scale_factor = 1.5
 ```
+
+## Density and Corners
+
+Everything inside the bar is laid out on two fixed scales: a spacing scale
+(`xxs` … `xxl`) and a radius scale (`sm` … `xl`). `[appearance.scale]` picks a
+named step for each rather than exposing the numbers themselves, so the whole
+bar keeps one rhythm instead of each panel being tuned separately.
+
+```toml
+[appearance.scale]
+spacing = "default"   # tight | compact | default | comfortable | spacious
+radius  = "default"   # sharp | subtle | default | rounded
+```
+
+`spacing` steps every gap, padding and inset together, including the bar's own
+`margin` and `padding`. `radius` steps every corner together: menus, cards,
+quick-settings tiles, buttons and the bar surface.
+
+| `spacing` | `xxs` | `xs` | `sm` | `md` | `lg` | `xl` | `xxl` |
+| --------- | ----- | ---- | ---- | ---- | ---- | ---- | ----- |
+| `tight` | 3 | 6 | 9 | 12 | 18 | 24 | 36 |
+| `compact` | 3.5 | 7 | 10.5 | 14 | 21 | 28 | 42 |
+| `default` | 4 | 8 | 12 | 16 | 24 | 32 | 48 |
+| `comfortable` | 5 | 10 | 15 | 20 | 30 | 40 | 60 |
+| `spacious` | 6 | 12 | 18 | 24 | 36 | 48 | 72 |
+
+| `radius` | `sm` | `md` | `lg` | `xl` |
+| -------- | ---- | ---- | ---- | ---- |
+| `sharp` | 0 | 0 | 0 | 0 |
+| `subtle` | 2 | 4 | 8 | 16 |
+| `default` | 4 | 8 | 16 | 32 |
+| `rounded` | 6 | 12 | 24 | 48 |
+
+An explicit pixel `margin` or `padding` on the bar is not affected by
+`spacing`.
 
 ## Status Bar
 

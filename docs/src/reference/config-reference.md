@@ -87,6 +87,20 @@ Available color fields: `background_color`, `primary_color`, `success_color`, `w
 backdrop = 0.3                  # darkening drawn behind an open menu
 ```
 
+### Scale
+
+```toml
+[appearance.scale]
+spacing = "default"             # tight|compact|default|comfortable|spacious
+radius = "default"              # sharp|subtle|default|rounded
+```
+
+`spacing` steps every gap, padding and inset together (including the bar's own
+`margin` and `padding`); `radius` steps every corner together. An explicit
+pixel `margin`/`padding` on the bar is unaffected by `spacing`. The resolved
+values at each step are tabulated in the user docs under
+`website/docs/configuration/appearance/general.md`.
+
 ### Workspace Colors
 
 ```toml

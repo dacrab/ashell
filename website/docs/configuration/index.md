@@ -93,7 +93,6 @@ Only `volume-up` / `volume-down` honour
 brightness steps are fixed. Sink volume is also capped by
 [`settings.max_volume`](./modules/settings.md#max-volume).
 
-
 Volume, microphone, brightness, airplane and idle inhibitor commands show an OSD (On-Screen Display)
 overlay by default. Add `--no-osd` to suppress it:
 

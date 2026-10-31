@@ -144,6 +144,10 @@ base = "#1e1e2e"
 
 [appearance.menu]
 backdrop = 0.3
+
+[appearance.scale]
+spacing = "default"        # tight|compact|default|comfortable|spacious
+radius = "default"         # sharp|subtle|default|rounded
 ```
 
 See the [Configuration Reference](../reference/config-reference.md) for a complete list of all configuration options.

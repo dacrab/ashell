@@ -4,7 +4,7 @@ sidebar_position: 13
 
 # Workspaces
 
-This module provides information about the current workspaces  
+This module provides information about the current workspaces
 and allows switching between them.
 
 ## Visibility Modes
@@ -55,7 +55,7 @@ there are none to show, so this option has no effect.
 
 ## Workspace Filling And Maximum Workspaces
 
-You can also enable or disable filling the workspace  
+You can also enable or disable filling the workspace
 list with empty workspaces using the `enable_workspace_filling` option.
 
 :::warning
@@ -65,17 +65,17 @@ is set to `MonitorSpecificExclusive`.
 
 :::
 
-If you want a specific number of empty workspaces always displayed,  
-you can use the `max_workspaces` option. This setting only works  
+If you want a specific number of empty workspaces always displayed,
+you can use the `max_workspaces` option. This setting only works
 if `enable_workspace_filling` is set to `true`.
 
-Usually, `enable_workspace_filling` will create empty workspaces  
-up to the greatest workspace in use.  
-For example, if you have a window open in workspace 1 and  
-another one in workspace 5, ashell will create empty  
+Usually, `enable_workspace_filling` will create empty workspaces
+up to the greatest workspace in use.
+For example, if you have a window open in workspace 1 and
+another one in workspace 5, ashell will create empty
 workspaces 2, 3, and 4 to fill the gap.
 
-With `max_workspaces` set to 10, ashell will also create  
+With `max_workspaces` set to 10, ashell will also create
 workspaces 6, 7, 8, 9, and 10.
 
 By default, `max_workspaces` is None, which disables this feature.
@@ -83,9 +83,9 @@ By default, `max_workspaces` is None, which disables this feature.
 ## Custom Workspace Names
 
 You can also assign **custom names** to your workspaces using
-the `workspace_names` option.  
+the `workspace_names` option.
 This lets you display alternative numerals (e.g., Roman numerals, Chinese numerals)
-instead of typical Arabic numerals.  
+instead of typical Arabic numerals.
 If a name is missing for a given workspace index, the numeric ID will be used
 as a fallback.
 
@@ -197,7 +197,7 @@ to the *entire* default config.
 
 ## Examples
 
-If you want to disable workspace filling and set the visibility mode  
+If you want to disable workspace filling and set the visibility mode
 to `MonitorSpecific`, you can do it like this:
 
 ```toml

@@ -69,7 +69,7 @@ pub fn my_button_style(&self) -> impl Fn(&Theme, Status) -> button::Style {
 
 ## Adding a Translation
 
-ashell uses [Fluent](https://projectfluent.org/) via the `i18n-embed` crate. 
+ashell uses [Fluent](https://projectfluent.org/) via the `i18n-embed` crate.
 Catalogs live in `i18n/<lang-tag>/ashell.ftl` and are baked into the binary at compile time with `include_str!`.
 
 1. Copy the seed catalog to a new BCP-47 directory (e.g. `fr-FR`, `de-DE`, `ru-RU`, `uk-UA`, `it-IT`):
@@ -81,8 +81,8 @@ Catalogs live in `i18n/<lang-tag>/ashell.ftl` and are baked into the binary at c
 2. Translate the right-hand side of every entry. Preserve:
    - the message keys and `## Section` comments,
    - every `{ $variable }` placeholder (e.g. `{ $count }`, `{ $ssid }`, `{ $duration }`),
-   - Fluent selector keys: state selectors `[on]/*[off]` and plural selectors like `[one]/*[other]`. 
-     The bracketed identifiers are Fluent literals — only the messages on the right-hand side get translated. 
+   - Fluent selector keys: state selectors `[on]/*[off]` and plural selectors like `[one]/*[other]`.
+     The bracketed identifiers are Fluent literals — only the messages on the right-hand side get translated.
      Use the [CLDR plural categories](https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html) that apply to your language; `*[other]` is the required default.
    - A message that takes `{ $count }` may need a plural selector in your language even when the en-US entry has none
      (e.g. `notifications-group-count`: French needs "1 nouvelle" / "2 nouvelles").
@@ -109,8 +109,8 @@ Catalogs live in `i18n/<lang-tag>/ashell.ftl` and are baked into the binary at c
    ];
    ```
 
-5. Test by setting `language = "<lang-tag>"` in `~/.config/ashell/config.toml`, 
-   or by launching with `LC_MESSAGES=<lang-tag> ./target/release/ashell`. 
+5. Test by setting `language = "<lang-tag>"` in `~/.config/ashell/config.toml`,
+   or by launching with `LC_MESSAGES=<lang-tag> ./target/release/ashell`.
    POSIX locale names are normalized to BCP-47 automatically.
 
 6. Run `make check` before pushing.

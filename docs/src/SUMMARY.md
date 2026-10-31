@@ -19,6 +19,7 @@
 - [The Elm Architecture in ashell](architecture/elm-architecture.md)
 - [Data Flow: Messages, Tasks, and Subscriptions](architecture/data-flow.md)
 - [Surface Model: Layer Shell and Multi-Monitor](architecture/surface-model.md)
+- [Quick-settings menu](architecture/settings-menu-design.md)
 - [Known Limitations and Design Debt](architecture/known-limitations.md)
 
 ---

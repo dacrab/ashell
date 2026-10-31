@@ -258,6 +258,10 @@ surface = "transparent"  # (default) or "solid"
 [appearance.menu]
 # backdrop = 0.0   # (default) darkening drawn behind an open menu
 
+[appearance.scale]
+# spacing = "default"  # tight|compact|default|comfortable|spacious, steps every gap together
+# radius = "default"   # sharp|subtle|default|rounded, steps every corner together
+
 [appearance.background_color]
 base = "#1a1b26"
 weak = "#24273a"

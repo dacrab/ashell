@@ -13,7 +13,7 @@ This module provides information about the system such as:
 - Network speed
 - Temperature
 
-It changes the indicator color based on the related value.  
+It changes the indicator color based on the related value.
 For example, if the CPU usage is above 80%, the indicator will be red.
 
 By default, the module will display the CPU usage, memory usage, and temperature.
@@ -116,14 +116,14 @@ To enable this indicator, add `IpAddress` to the `indicators` configuration.
 
 ### DownloadSpeed
 
-The DownloadSpeed indicator displays the current download speed  
+The DownloadSpeed indicator displays the current download speed
 of the system's network connection.
 
 To enable this indicator, add `DownloadSpeed` to the `indicators` configuration.
 
 ### UploadSpeed
 
-The UploadSpeed indicator displays the current upload speed  
+The UploadSpeed indicator displays the current upload speed
 of the system's network connection.
 
 To enable this indicator, add `UploadSpeed` to the `indicators` configuration.

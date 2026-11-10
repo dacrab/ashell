@@ -356,7 +356,9 @@ impl ReadOnlyService for AudioService {
 
 pub enum AudioCommand {
     ToggleSinkMute,
+    SetSinkMute(bool),
     ToggleSourceMute,
+    SetSourceMute(bool),
     SinkVolume(u32),
     SourceVolume(u32),
     DefaultSink(String, Option<String>),
@@ -367,62 +369,42 @@ impl Service for AudioService {
     type Command = AudioCommand;
 
     fn command(&mut self, command: Self::Command) -> Task<ServiceEvent<Self>> {
-        let sent = match command {
-            AudioCommand::ToggleSinkMute => {
-                if let Some(sink) = self.active_sink() {
-                    self.commander
-                        .send(PulseAudioCommand::SinkMute(
-                            sink.name.clone(),
-                            !sink.is_mute,
-                        ))
-                        .is_ok()
-                } else {
-                    false
-                }
+        // Resolve the command into the exact PulseAudio request to send; a
+        // toggle is a set of the inverted current state, and with no active
+        // device there is nothing to send.
+        let request = match command {
+            AudioCommand::ToggleSinkMute => self
+                .active_sink()
+                .map(|sink| PulseAudioCommand::SinkMute(sink.name.clone(), !sink.is_mute)),
+            AudioCommand::SetSinkMute(mute) => self
+                .active_sink()
+                .map(|sink| PulseAudioCommand::SinkMute(sink.name.clone(), mute)),
+            AudioCommand::ToggleSourceMute => self
+                .active_source()
+                .map(|source| PulseAudioCommand::SourceMute(source.name.clone(), !source.is_mute)),
+            AudioCommand::SetSourceMute(mute) => self
+                .active_source()
+                .map(|source| PulseAudioCommand::SourceMute(source.name.clone(), mute)),
+            AudioCommand::SinkVolume(volume) => self.active_sink().and_then(|sink| {
+                sink.volume
+                    .scaled(volume)
+                    .map(|volume| PulseAudioCommand::SinkVolume(sink.name.clone(), volume))
+            }),
+            AudioCommand::SourceVolume(volume) => self.active_source().and_then(|source| {
+                source
+                    .volume
+                    .scaled(volume)
+                    .map(|volume| PulseAudioCommand::SourceVolume(source.name.clone(), volume))
+            }),
+            AudioCommand::DefaultSink(name, port) => {
+                Some(PulseAudioCommand::DefaultSink(name, port))
             }
-            AudioCommand::ToggleSourceMute => {
-                if let Some(source) = self.active_source() {
-                    self.commander
-                        .send(PulseAudioCommand::SourceMute(
-                            source.name.clone(),
-                            !source.is_mute,
-                        ))
-                        .is_ok()
-                } else {
-                    false
-                }
+            AudioCommand::DefaultSource(name, port) => {
+                Some(PulseAudioCommand::DefaultSource(name, port))
             }
-            AudioCommand::SinkVolume(volume) => {
-                if let Some(sink) = self.active_sink()
-                    && let Some(volume) = sink.volume.scaled(volume)
-                {
-                    self.commander
-                        .send(PulseAudioCommand::SinkVolume(sink.name.clone(), volume))
-                        .is_ok()
-                } else {
-                    false
-                }
-            }
-            AudioCommand::SourceVolume(volume) => {
-                if let Some(source) = self.active_source()
-                    && let Some(volume) = source.volume.scaled(volume)
-                {
-                    self.commander
-                        .send(PulseAudioCommand::SourceVolume(source.name.clone(), volume))
-                        .is_ok()
-                } else {
-                    false
-                }
-            }
-            AudioCommand::DefaultSink(name, port) => self
-                .commander
-                .send(PulseAudioCommand::DefaultSink(name, port))
-                .is_ok(),
-            AudioCommand::DefaultSource(name, port) => self
-                .commander
-                .send(PulseAudioCommand::DefaultSource(name, port))
-                .is_ok(),
         };
+
+        let sent = request.is_some_and(|request| self.commander.send(request).is_ok());
 
         if sent {
             self.wake.wake();
